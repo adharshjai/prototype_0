@@ -306,7 +306,7 @@ test('a one-time sign-in link: the code is swapped for a token, then /me and /st
   assert.strictEqual(browser.window.location.hash, '#normal');
   assert.strictEqual(browser.seen('user-name'), onPage(me.user.display_name || me.user.name));
   assert.strictEqual(browser.seen('user-role'), me.user.role);
-  assert.strictEqual(browser.seen('engine-chip'), pure.engineLabel(me.engine));
+  assert.strictEqual(browser.seen('user-initial'), pure.initialOf(pure.cut(me.user.display_name || me.user.name, 60)));
   assert.strictEqual(browser.shown('demo-chip'), record('status').body.database.demo === true);
   assert.ok(browser.shown('tab-expert'), 'the admin has "sql"');
   assert.strictEqual(browser.byId('ask-simulated').checked, me.defaults.include_simulated !== false);
@@ -331,7 +331,7 @@ function checkResults(browser, reply) {
   includes(text, 'Searched in ' + pure.backendLabel(reply.backend));
   reply.notices.forEach(function (notice) { includes(text, onPage(notice), 'notice'); });
   if (reply.notices.length === 0) assert.strictEqual(browser.byId('ask-results').querySelectorAll('p').filter(function (p) {
-    return p.className === 'notice';
+    return p.className === 'banner';
   }).length, 0);
   // The request that ran, in the collapsed block.
   includes(text, onPage(JSON.stringify(reply.request, null, 2)).slice(0, 300), 'the request');
@@ -345,7 +345,6 @@ function checkResults(browser, reply) {
   results.forEach(function (result) {
     includes(text, onPage(pure.cut(result.folder, 120)), 'folder');
     includes(text, onPage(result.instrument), 'instrument');
-    if (result.sample_ids) includes(text, onPage(pure.cut(pure.listText(result.sample_ids), 200)), 'samples');
     if (result.labels || result.label_counts) includes(text, onPage(pure.cut(pure.labelsText(result), 300)), 'labels');
     if (result.completion) includes(text, result.completion);
     assert.ok(pure.parseUtc(result.started), 'started is the time text of section 11: ' + result.started);
@@ -369,8 +368,11 @@ test('Normal: every example question on the page finds sessions in the demo data
   const buttons = browser.byId('ask-examples').querySelectorAll('button');
   assert.ok(buttons.length >= 3);
   for (const button of buttons) {
-    const question = seen(button);
+    // A chip shows a few words; the question it asks is written in index.html.
+    const question = button.getAttribute('data-question');
+    assert.ok(question && seen(button).length < question.length, 'a short chip for: ' + question);
     await browser.click(button);
+    assert.strictEqual(browser.paths('POST /api/v1/ask').pop().body.question, question);
     const reply = askRecord(question, true);
     assert.ok(reply.results.length > 0, 'the example "' + question + '" finds nothing in the demo data');
     checkResults(browser, reply);
@@ -394,7 +396,7 @@ test('Normal: nothing matched, with and without simulated sessions', async funct
   let reply = askRecord('Which sessions have adenine?', false);
   assert.strictEqual(reply.total, 0, 'the demo data is all simulated');
   checkResults(browser, reply);
-  includes(browser.seen('ask-results'), 'Simulated sessions were left out. Tick "Include simulated sessions" to search them too.');
+  includes(browser.seen('ask-results'), 'Simulated sessions were left out. Turn on "Include simulated" to search them.');
   if (reply.answer && reply.answer_by !== 'llm') {
     assert.ok(browser.seen('ask-results').indexOf(onPage(reply.answer)) === -1,
       'a sentence not written by the assistant is not shown as its answer (the page says it in its own words)');
@@ -564,10 +566,15 @@ test('Expert: the tables, the examples and the history from the real backend', a
     assert.strictEqual(toggle.getAttribute('aria-expanded'), 'true');
   }
   const list = browser.seen('schema-list');
+  // Names only on the page; each description is the tooltip of its name.
+  const tooltips = buttonsWithClass(browser, 'schema-list', 'insert').map(function (b) { return b.getAttribute('title'); }).join('\n');
   schema.objects.forEach(function (object) {
     includes(list, onPage(object.name), 'table');
-    if (object.description) includes(list, onPage(pure.cut(object.description, 400)));
-    object.columns.forEach(function (column) { includes(list, onPage(column.name), 'column'); });
+    if (object.description) includes(tooltips, onPage(pure.cut(pure.oneLine(object.description), 400)), 'description');
+    object.columns.forEach(function (column) {
+      includes(list, onPage(column.name), 'column');
+      if (column.description) includes(tooltips, onPage(pure.cut(pure.oneLine(column.description), 400)), 'column description');
+    });
   });
   const examples = record('sql_examples').body.examples;
   assert.strictEqual(browser.byId('sql-examples').options.length, examples.length + 1);
@@ -626,7 +633,7 @@ test('Expert: what the database refuses is shown in its own words', async functi
     includes(text, pure.sqlFailureTitle(run.body.error.code));
     includes(text, onPage(run.body.error.message));
     const details = run.body.error.details;
-    if (details && Object.keys(details).length > 0) includes(text, 'More from the backend');
+    if (details && Object.keys(details).length > 0) includes(text, 'More details');
     assert.strictEqual(browser.byId('sql-result').childNodes.length, 0);
   }
   done(browser);
@@ -643,7 +650,7 @@ test('a role without "sql": no Expert view; a stale #expert lands on Normal; que
   assert.strictEqual(browser.paths('GET /api/v1/sql/schema').length, 0, 'nothing of Expert is loaded');
   await browser.go('#expert');
   assert.strictEqual(browser.window.location.hash, '#normal');
-  includes(browser.seen('lanes-you'), 'You can use Normal. Expert needs the analyst or admin role.');
+  includes(browser.seen('lanes-you'), 'You are viewer: Normal only');
   await ask(browser, 'Which sessions still need review?', true);
   checkResults(browser, askRecord('Which sessions still need review?', true, 'viewer'));
   done(browser);
@@ -749,10 +756,13 @@ test('hostile text from real records only ever reaches the page as text', async 
   const blocks = browser.byId('detail-body').querySelectorAll('pre');
   assert.ok(blocks.some(function (pre) { return pre.textContent.indexOf('BBBBBBBBBB') !== -1; }));
   assert.ok(blocks.every(function (pre) { return pre.textContent.length <= 100001; }));
-  // The Normal view gets the same session from the search: sample ids and the folder as text.
+  // The Normal view gets the same session from the search, and its panel shows the sample ids as text.
   const normal = await signedIn({arcUser: ARC_USER});
   await ask(normal, 'newest sessions', true);
-  includes(normal.seen('ask-results'), '<img src=x onerror=alert(1)>');
+  const found = askRecord('newest sessions', true).results.map(function (item) { return item.path; }).indexOf(sessionPath);
+  assert.ok(found !== -1, 'the hostile session is among the newest');
+  await normal.click(buttonsWithClass(normal, 'ask-results', 'rowlink')[found]);
+  includes(normal.seen('detail-body'), '<img src=x onerror=alert(1)>');
   done(browser);
   done(normal);
 });

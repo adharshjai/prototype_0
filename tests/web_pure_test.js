@@ -490,16 +490,16 @@ test('who read the question, where it was searched, how many matched', function 
   assert.strictEqual(app.backendLabel('globus'), 'Globus Search');
   assert.strictEqual(app.backendLabel('local'), "this computer's copy of the index");
   assert.strictEqual(app.backendLabel(undefined), 'not stated');
-  assert.strictEqual(app.countLine(10, 12), 'Showing 10 of 12 sessions');
-  assert.strictEqual(app.countLine(12, 12), 'Showing 12 of 12 sessions');
-  assert.strictEqual(app.countLine(1, 1), 'Showing 1 of 1 session');
-  assert.strictEqual(app.countLine(3, undefined), 'Showing 3 of 3 sessions');
-  assert.strictEqual(app.countLine(3, 2), 'Showing 3 of 3 sessions');
-  assert.strictEqual(app.countLine(0, 0), 'No sessions matched.');
+  assert.strictEqual(app.countLine(10, 12), '10 of 12 sessions');
+  assert.strictEqual(app.countLine(12, 12), '12 sessions');
+  assert.strictEqual(app.countLine(1, 1), '1 session');
+  assert.strictEqual(app.countLine(3, undefined), '3 sessions');
+  assert.strictEqual(app.countLine(3, 2), '3 sessions');
+  assert.strictEqual(app.countLine(0, 0), 'No sessions matched');
   // A count without a list is not "nothing matched".
-  assert.strictEqual(app.countLine(0, 5), '5 sessions matched, but none is listed here.');
-  assert.strictEqual(app.countLine(0, 1), '1 session matched, but none is listed here.');
-  assert.strictEqual(app.countLine(null, null), 'No sessions matched.');
+  assert.strictEqual(app.countLine(0, 5), '5 sessions matched, but none is listed here');
+  assert.strictEqual(app.countLine(0, 1), '1 session matched, but none is listed here');
+  assert.strictEqual(app.countLine(null, null), 'No sessions matched');
   assert.strictEqual(app.timingText({plan: 12.4, search: 3, answer: 0}),
     'Time taken: reading the question 12 ms, searching 3 ms, writing the answer 0 ms.');
   assert.strictEqual(app.timingText({search: 3}), 'Time taken: searching 3 ms.');
@@ -680,6 +680,43 @@ test('what the Status view says about the assistant', function () {
     assert.ok(short.length > 5 && !/^can be reached/.test(short), state + ': ' + short);
   });
   assert.strictEqual(words('ready').short, 'can be reached');
+  // The card: a coloured dot, its title and one plain line. Green only when it really works.
+  assert.deepStrictEqual([words('ready').kind, words('ready').title], ['ok', 'Ready']);
+  assert.deepStrictEqual([words('off_vpn').kind, words('off_vpn').title], ['warn', 'Off the VT network']);
+  assert.ok(/VPN/.test(words('off_vpn').line));
+  assert.deepStrictEqual([words('bad_key').kind, words('bad_key').title], ['bad', 'Key refused']);
+  assert.strictEqual(app.assistantWords({enabled: false}).kind, 'off');
+  assert.strictEqual(app.assistantWords({enabled: true, key_present: false}).kind, 'off');
+  ['off_vpn', 'bad_key', 'error', 'unknown', 'surprise'].forEach(function (state) {
+    const w = words(state);
+    assert.notStrictEqual(w.kind, 'ok', state);
+    assert.ok(w.title.split(' ').length <= 4 && w.line.split(' ').length <= 12, state + ': ' + w.title + ' / ' + w.line);
+  });
+});
+
+test('what the Status view says about the search, who the person is, the round mark', function () {
+  assert.deepStrictEqual(app.searchState({backend: 'local', entries: {pending: 16}}),
+    {kind: 'ok', title: 'Local index', line: "Questions search this computer's copy of the index."});
+  assert.strictEqual(app.searchState(null).title, 'Local index');
+  // The copy on this computer is never called Globus Search.
+  assert.ok(!/Globus Search/.test(JSON.stringify(app.searchState({backend: 'local'}))));
+  assert.deepStrictEqual(app.searchState({backend: 'globus', entries: {synced: 14}}),
+    {kind: 'ok', title: 'Globus Search', line: 'Questions are searched with Globus Search.'});
+  assert.deepStrictEqual(app.searchState({backend: 'globus', entries: {synced: 14, pending: 1}}),
+    {kind: 'warn', title: 'Entries waiting', line: '1 entry waits to be sent.'});
+  assert.deepStrictEqual(app.searchState({backend: 'globus', entries: {pending: 3, failed: 2}}),
+    {kind: 'bad', title: 'Some not sent', line: '2 entries could not be sent.'});
+  assert.strictEqual(app.searchState({backend: 'globus', entries: {failed: 'many', pending: -4}}).kind, 'ok');
+  assert.strictEqual(app.lanesLine('admin', true), 'You are admin: Normal and Expert');
+  assert.strictEqual(app.lanesLine('viewer', false), 'You are viewer: Normal only');
+  assert.strictEqual(app.lanesLine('', false), 'You can use Normal only');
+  assert.strictEqual(app.initialOf('Local admin'), 'L');
+  assert.strictEqual(app.initialOf('  demo-analyst'), 'D');
+  assert.strictEqual(app.initialOf('\u{202e}\u{e9}mile'), '\u{c9}', 'characters that cannot be seen are skipped');
+  assert.strictEqual(app.initialOf('<b>'), 'B');
+  assert.strictEqual(app.initialOf(''), '?');
+  assert.strictEqual(app.initialOf(null), '?');
+  assert.strictEqual(app.initialOf('\u{1d4d0}bc').length, 2, 'a letter outside the first plane stays whole');
 });
 
 // ---- the session detail ------------------------------------------------------------------------

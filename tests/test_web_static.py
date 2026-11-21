@@ -108,8 +108,14 @@ SAFE_TAGS = frozenset(
 )
 SAFE_ATTRIBUTES = frozenset(
     "class type title scope colspan datetime tabindex role hidden value id aria-label aria-live "
-    "aria-expanded aria-controls".split()
+    "aria-expanded aria-controls open".split()
 )
+
+# The icons are inline drawings in index.html: these parts and attributes only (no address, no
+# style, no script, nothing that loads or links), and each drawing is hidden from screen readers.
+ICON_TAGS = frozenset({"svg", "path", "circle", "rect"})
+ICON_ATTRIBUTES = frozenset({"class", "viewbox", "aria-hidden", "focusable", "id", "d", "cx", "cy", "r", "x", "y",
+                             "width", "height", "rx"})
 
 # Each one finds sessions in the demo data with the keyword rules alone (no assistant):
 # TestPageOnTheRealBackend asks every one of them and checks that.
@@ -327,6 +333,7 @@ TEXT_PAIRS = (
     ("danger", "bg"), ("danger", "surface"), ("danger", "surface-2"), ("danger", "danger-soft"),
     ("warning", "bg"), ("warning", "surface"), ("warning", "warning-soft"),
     ("ok", "surface"), ("ok", "ok-soft"),
+    ("muted", "ok-soft"), ("muted", "warning-soft"), ("muted", "danger-soft"),
 )
 # The borders of fields and buttons, the focus ring, the marks of tags: 3 to 1.
 EDGE_PAIRS = (
@@ -410,10 +417,47 @@ class TestIndexHtml(unittest.TestCase):
 
     def test_no_element_that_loads_or_frames_other_content(self) -> None:
         for tag in ("base", "iframe", "frame", "object", "embed", "applet", "img", "video", "audio", "source",
-                    "svg", "math", "template", "portal"):
+                    "math", "template", "portal", "use", "image", "foreignobject", "animate", "set", "style",
+                    "title", "desc"):
+            if tag == "title":
+                self.assertEqual(len(self.page.all(tag)), 1, "only the title of the page")
+                continue
             self.assertEqual(self.page.all(tag), [], tag)
         for meta in self.page.all("meta"):
             self.assertNotIn("http-equiv", meta)
+
+    def test_the_icons_are_plain_drawings_hidden_from_screen_readers(self) -> None:
+        drawings = 0
+        for index, (tag, attrs) in enumerate(self.page.elements):
+            inside = self.page.parent.get(index)
+            in_drawing = False
+            while inside is not None:
+                if self.page.elements[inside][0] == "svg":
+                    in_drawing = True
+                    break
+                inside = self.page.parent.get(inside)
+            if tag != "svg" and not in_drawing:
+                continue
+            with self.subTest(tag=tag, attrs=attrs):
+                self.assertIn(tag, ICON_TAGS)
+                self.assertEqual(set(attrs) - ICON_ATTRIBUTES, set())
+                self.assertFalse(self.page.text.get(index, "").strip(), "a drawing holds no text")
+            if tag == "svg":
+                drawings += 1
+                self.assertEqual(attrs.get("aria-hidden"), "true")
+                self.assertEqual(attrs.get("focusable"), "false")
+                self.assertIn(attrs.get("class").split()[0], ("icon", "logo"))
+        self.assertGreater(drawings, 10)
+        # The icons the script copies sit in one hidden block, each under the name app.js uses.
+        icons = self.page.index_of("icons")
+        self.assertIn("hidden", self.page.elements[icons][1])
+        names = js_list(read("app.js"), "ICON_NAMES")
+        for name in names:
+            with self.subTest(icon=name):
+                self.assertTrue(self.page.inside(self.page.index_of("icon-" + name), "icons"))
+        self.assertEqual(sorted(attrs["id"] for _tag, attrs in self.page.elements
+                                if (attrs.get("id") or "").startswith("icon-")),
+                         sorted("icon-" + name for name in names))
 
     def test_head_names_the_three_files(self) -> None:
         links = self.page.all("link")
@@ -471,22 +515,37 @@ class TestIndexHtml(unittest.TestCase):
             for attrs in self.page.all(tag):
                 with self.subTest(tag=tag, id=attrs.get("id")):
                     self.assertIn(attrs.get("id"), labelled)
-                    self.assertNotIn("placeholder", attrs, "a placeholder is not a label and reads too pale")
+                    # A placeholder is never the label. The one example in the search box has
+                    # a label of its own and the muted colour, which keeps AA contrast.
+                    if attrs.get("id") == "ask-question":
+                        self.assertEqual(attrs.get("placeholder"), EXAMPLE_QUESTIONS[0])
+                    else:
+                        self.assertNotIn("placeholder", attrs, "a placeholder is not a label")
+        css = strip_css_comments(read("app.css"))
+        self.assertRegex(css, r"\.search-input::placeholder\s*\{\s*color:\s*var\(--muted\);\s*opacity:\s*1;")
         for attrs in self.page.all("button"):
             with self.subTest(button=attrs.get("id")):
                 self.assertIn(attrs.get("type"), ("button", "submit"))
-        for index, (tag, _attrs) in enumerate(self.page.elements):
+        for index, (tag, attrs) in enumerate(self.page.elements):
             if tag == "button":
-                self.assertTrue(" ".join(self.page.all_text.get(index, "").split()), "a button without words")
+                words = " ".join(self.page.all_text.get(index, "").split())
+                # A button with only an icon says what it does to screen readers and in a tooltip.
+                if not words:
+                    self.assertTrue(attrs.get("aria-label"), "a button without words needs an aria-label")
+                    self.assertEqual(attrs.get("title"), attrs.get("aria-label"))
 
     def test_the_three_views_and_the_switch_between_them(self) -> None:
         # Section 12: #normal (default), #expert (only with the capability "sql"), #status, and
         # the switch says in words what each mode is.
         links = {attrs.get("id"): attrs.get("href") for attrs in self.page.all("a")}
         self.assertEqual(links, {"tab-normal": "#normal", "tab-expert": "#expert", "tab-status": "#status"})
-        self.assertEqual(self.page.inner_text("tab-normal"), "Normal: ask in plain English, files through Globus")
-        self.assertEqual(self.page.inner_text("tab-expert"), "Expert: SQL, files through SSH")
+        # A segmented control with the names the lab's documents use; the tooltip says what each is.
+        self.assertEqual(self.page.inner_text("tab-normal"), "Normal")
+        self.assertEqual(self.page.inner_text("tab-expert"), "Expert")
         self.assertEqual(self.page.inner_text("tab-status"), "Status")
+        titles = {attrs.get("id"): attrs.get("title") for attrs in self.page.all("a")}
+        self.assertEqual(titles["tab-normal"], "Ask in plain English. Files through Globus.")
+        self.assertEqual(titles["tab-expert"], "SQL. Files through SSH.")
         nav = next(attrs for attrs in self.page.all("nav") if attrs.get("id") == "tabs")
         self.assertTrue(nav.get("aria-label"))
         ids = set(self.page.ids())
@@ -510,17 +569,58 @@ class TestIndexHtml(unittest.TestCase):
         self.assertFalse({"normal", "expert", "status", "ask", "sql", "signin"} & ids)
 
     def test_each_mode_says_how_its_files_are_reached(self) -> None:
-        # Section 12: a short "Files in this mode" note in both modes.
-        self.assertEqual(self.page.texts("h3").count("Files in this mode"), 2)
+        # Section 12: each mode says, in one short muted line, how its files are reached.
         normal = self.page.inner_text("panel-normal")
         expert = self.page.inner_text("panel-expert")
-        self.assertIn("Files in this mode In Normal mode you reach a session's files, and add new ones, through Globus.",
-                      normal)
+        self.assertIn("Open a session to reach its files through Globus.", normal)
         self.assertNotIn("SSH", normal)
-        self.assertIn("Files in this mode In Expert mode you reach a session's files, and add new ones, over SSH.",
-                      expert)
+        self.assertIn("Click a path in a result to reach its files over SSH.", expert)
         self.assertNotIn("Globus", expert)
-        self.assertIn("a column named path or session_path opens that session", expert)
+        hints = [index for index, (tag, attrs) in enumerate(self.page.elements) if "hint" in (attrs.get("class") or "").split()]
+        self.assertEqual(len(hints), 2)
+        # And the tooltips of the switch say it too.
+        self.assertIn("Globus", self.page.elements[self.page.index_of("tab-normal")][1]["title"])
+        self.assertIn("SSH", self.page.elements[self.page.index_of("tab-expert")][1]["title"])
+
+    def test_at_first_glance_the_words_are_few(self) -> None:
+        # No view shows a paragraph of more than 12 words until a toggle is opened; labels have
+        # at most three words and buttons are short. The long explanations are kept in toggles.
+        def hidden_away(index: int) -> bool:
+            current: int | None = index
+            while current is not None:
+                tag, attrs = self.page.elements[current]
+                if tag in ("details", "noscript", "dialog") or attrs.get("id") == "icons":
+                    return True
+                if "visually-hidden" in (attrs.get("class") or "").split():
+                    return True
+                current = self.page.parent.get(current)
+            return False
+
+        for index, (tag, attrs) in enumerate(self.page.elements):
+            if hidden_away(index):
+                continue
+            words = self.page.all_text.get(index, "").split()
+            with self.subTest(tag=tag, id=attrs.get("id"), words=" ".join(words)):
+                if tag in ("p", "h2", "h3"):
+                    self.assertLessEqual(len(words), 12)
+                if tag == "label":
+                    self.assertLessEqual(len(words), 3)
+                if tag == "button":
+                    limit = 4 if "chip" in (attrs.get("class") or "").split() else 3
+                    self.assertLessEqual(len(words), limit)
+        # What moved into toggles is still on the page, one click away.
+        for element_id in ("signin-help", "arc-user-help", "lane-normal-title", "lane-expert-title", "history-list",
+                           "schema-list"):
+            with self.subTest(moved=element_id):
+                index = self.page.index_of(element_id)
+                inside_details = False
+                current = self.page.parent.get(index)
+                while current is not None:
+                    if self.page.elements[current][0] == "details":
+                        inside_details = True
+                        self.assertNotIn("open", self.page.elements[current][1], "a toggle starts closed")
+                    current = self.page.parent.get(current)
+                self.assertTrue(inside_details)
 
     def test_the_arc_user_name_field(self) -> None:
         # Section 12: "Your ARC user name", kept only in this browser, never sent to the server.
@@ -539,6 +639,12 @@ class TestIndexHtml(unittest.TestCase):
         self.assertIn("never sent to the server", help_text)
         self.assertIn("Empty the box to remove it", help_text)
         self.assertTrue(self.page.inside(self.page.index_of("arc-user"), "panel-expert"))
+        # It waits in a closed "SSH settings" toggle, out of the way of the query box.
+        holder = self.page.parent[self.page.parent[self.page.index_of("arc-user")]]
+        self.assertEqual(self.page.elements[holder][0], "details")
+        self.assertNotIn("open", self.page.elements[holder][1])
+        self.assertIn("SSH settings", self.page.texts("summary"))
+        self.assertLess(self.html.index('id="sql-text"'), self.html.index('id="arc-user"'))
 
     def test_the_status_view_sums_up_the_two_modes(self) -> None:
         # Section 12: "a two-column summary of the two lanes" (the table of section 0).
@@ -547,7 +653,8 @@ class TestIndexHtml(unittest.TestCase):
         for name in ("Who", "Find data", "Get to the files", "Add files"):
             self.assertEqual(rows.count(name), 2, name)
         text = self.page.inner_text("panel-status")
-        for needle in ("Two ways to work", "Every registered session can be found both ways",
+        self.assertIn("About the two modes", self.page.texts("summary"))
+        for needle in ("About the two modes", "Every registered session can be found both ways",
                        "A question in plain English.", "Globus: the session's folder opens in the Globus web app.",
                        "Globus Transfer.", "People with the analyst or admin role.", "SQL that can only read",
                        "SSH: the path on ARC, and scp, sftp and rsync commands ready to copy.",
@@ -576,13 +683,24 @@ class TestIndexHtml(unittest.TestCase):
         editor = next(attrs for attrs in self.page.all("textarea") if attrs.get("id") == "sql-text")
         self.assertEqual(editor.get("spellcheck"), "false")
         self.assertEqual(editor.get("aria-describedby"), "sql-hint")
-        # The Tab key writes spaces in the box, so the hint must say how to leave it.
-        self.assertIn("Press Escape to leave the box", self.page.inner_text("sql-hint"))
+        # The Tab key writes spaces in the box, so the hint must say how to leave it, and how to run.
+        self.assertEqual(self.page.inner_text("sql-hint"), "Ctrl+Enter or Cmd+Enter runs. Esc leaves the box.")
+        # The editor first, then its toolbar: Examples, Cancel (only while running), Run.
+        order = [self.html.index('id="' + name + '"') for name in ("sql-text", "sql-examples", "sql-cancel", "sql-run")]
+        self.assertEqual(order, sorted(order))
+        cancel = next(attrs for attrs in self.page.all("button") if attrs.get("id") == "sql-cancel")
+        self.assertIn("hidden", cancel)
+        self.assertIn("disabled", cancel)
 
     def test_example_questions(self) -> None:
-        buttons = self.page.texts("button")
-        for question in EXAMPLE_QUESTIONS:
-            self.assertIn(question, buttons)
+        # Short chips; each one asks the whole question written in its data-question.
+        chips = [index for index, (tag, attrs) in enumerate(self.page.elements)
+                 if tag == "button" and self.page.inside(index, "ask-examples")]
+        self.assertEqual([self.page.elements[index][1].get("data-question") for index in chips], list(EXAMPLE_QUESTIONS))
+        self.assertEqual([" ".join(self.page.all_text[index].split()) for index in chips],
+                         ["Adenine sessions", "Raman, last 7 days", "Sessions per instrument", "Needs review",
+                          "Partial or failed"])
+        self.assertEqual(self.page.elements[self.page.index_of("ask-examples")][1].get("aria-label"), "Example questions")
         question = next(attrs for attrs in self.page.all("input") if attrs.get("id") == "ask-question")
         self.assertEqual(question.get("maxlength"), "500", "section 8: a question has 1 to 500 characters")
 
@@ -590,6 +708,7 @@ class TestIndexHtml(unittest.TestCase):
         text = " ".join(self.html.split())
         self.assertIn("Paste your access token", text)
         self.assertIn("var/admin_token.txt", text)
+        self.assertIn("Where is my token?", self.page.texts("summary"))
         # NEW-11: commands that work as typed (a bare "pcldb" is not a command)
         self.assertIn("<code>./pcldb.sh serve --open</code>", text)
         self.assertIn("<code>.\\pcldb.cmd serve --open</code>", text)
@@ -802,6 +921,25 @@ class TestAppJs(unittest.TestCase):
         self.has("document.createElement('a')", 2)
         self.assertEqual(self.code.count("createElementNS"), 0)
 
+    def test_icons_are_copies_of_the_drawings_in_the_page(self) -> None:
+        # The one other way an element reaches the page: a copy of an icon drawn in index.html,
+        # by a fixed name, checked against the list before anything is copied.
+        self.assertEqual(self.code.count("cloneNode("), 1)
+        make = js_function(self.js, "icon")
+        self.assertIn("if (ICON_NAMES.indexOf(name) === -1) throw new Error(", make)
+        self.assertIn("const copy = byId('icon-' + name).cloneNode(true);", make)
+        self.assertIn("copy.removeAttribute('id');", make)
+        self.assertLess(make.index("ICON_NAMES.indexOf(name)"), make.index("cloneNode"))
+        # Every icon the script asks for is in the list, and always by a written-out name.
+        asked = re.findall(r"\bicon\(([^)]*)\)", self.code.replace("function icon(name)", ""))
+        self.assertGreater(len(asked), 8)
+        for argument in asked:
+            with self.subTest(argument=argument):
+                self.assertRegex(argument, r"^'[a-z]+'$|^iconName$")
+                if argument != "iconName":
+                    self.assertIn(argument.strip("'"), js_list(self.js, "ICON_NAMES"))
+        self.assertEqual(re.findall(r"statusCard\('(\w+)'", self.code), ["database", "search", "spark"])
+
     def test_el_makes_only_harmless_elements_and_attributes(self) -> None:
         tags = js_list(self.js, "EL_TAGS")
         attributes = js_list(self.js, "EL_ATTRIBUTES")
@@ -880,6 +1018,8 @@ class TestAppJs(unittest.TestCase):
         for view in VIEWS:
             used |= {f"panel-{view}", f"tab-{view}", f"{view}-title"}
         used |= set(re.findall(r"'([a-z-]+)'", re.search(r"\[('user-name'[^\]]*)\]\.forEach", self.js).group(1)))
+        # The icons are asked for by their names in ICON_NAMES (see icon()).
+        used |= {"icon-" + name for name in js_list(self.js, "ICON_NAMES")} | {"icons"}
         self.assertEqual(sorted(ids - used - {"main"}), [])
 
     def test_the_normal_view(self) -> None:
@@ -889,14 +1029,20 @@ class TestAppJs(unittest.TestCase):
         self.assertIn("'Written by the ARC assistant. Check it against the table.'", render)
         self.assertEqual(render.count("answer-text"), 1)
         how = js_function(self.js, "howSearched")
-        for needle in ("'How this was searched'", "'Question read by'", "'Searched in'", "'The exact request that ran'"):
+        for needle in ("'How this was searched'", "'Question read by'", "'Searched in'", "'Exact request'"):
             self.assertIn(needle, how)
+        # All of it waits behind one closed "Details" toggle.
+        self.assertIn("return fold('Details', [", how)
+        self.assertIn("], false, 'fold-small');", how)
         # It never says "Globus Search" for the copy on this computer.
         self.has("if (backend === 'globus') return 'Globus Search';")
         self.has("if (backend === 'local') return \"this computer's copy of the index\";")
         self.has("if (plannedBy === 'llm') return 'assistant';")
         self.has("if (plannedBy === 'rules') return 'keyword rules';")
-        self.has("const headings = ['Session', 'Instrument', 'Started (your time)', 'Samples', 'Labels', 'State'];")
+        self.has("const headings = ['Session', 'Instrument', 'Started', 'Labels', 'State'];")
+        # The chips ask the question written in index.html, never words typed in from elsewhere.
+        self.has("button.getAttribute('data-question')", 1)
+        self.has("byId('panel-normal').classList.toggle('is-compact', true);", 1)
         row = js_function(self.js, "sessionRow")
         self.assertIn("'simulated'", row)
         self.assertEqual(row.count("openDetail(path, folder, name, 'normal');"), 2)   # the name and the row
@@ -904,7 +1050,7 @@ class TestAppJs(unittest.TestCase):
     def test_the_file_actions_follow_the_mode(self) -> None:
         actions = js_function(self.js, "fileActions")
         self.assertIn("if (lane !== 'expert') blocks.push(globusActions(session, statusNode));", actions)
-        self.assertIn("if (lane === 'expert' || (lane === 'status' && can('sql'))) blocks.push(sshActions(session, statusNode));",
+        self.assertIn("if (lane === 'expert' || (lane === 'status' && can('sql'))) blocks.push(sshActions(session, statusNode, lane));",
                       actions)
         self.has("openDetail(path, lastSegment(path), button, 'expert');", 1)    # from the result grid
         self.has("openDetail(path, lastSegment(path), name, 'status');", 1)      # from the registrations
@@ -1054,6 +1200,22 @@ class TestAppCss(unittest.TestCase):
         self.assertNotIn("user-select: none", self.clean)
         self.assertNotIn("outline: none;\n}\n\n.btn", self.clean)
 
+    def test_long_lines_never_widen_the_page(self) -> None:
+        # A one-line item cut with "..." needs a column that may shrink below its text: without
+        # minmax(0, 1fr) a long saved query made the page 1302 px wide on a 380 px phone.
+        history = re.search(r"\n\.history-list \{([^}]*)\}", self.clean)
+        self.assertIsNotNone(history)
+        self.assertIn("grid-template-columns: minmax(0, 1fr);", history.group(1))
+        item = re.search(r"\n\.history-item \{([^}]*)\}", self.clean)
+        self.assertIsNotNone(item)
+        self.assertIn("min-width: 0;", item.group(1))
+        # On a phone a saved query is a touch target of 40 px or more, and the registrations
+        # become cards instead of a table that scrolls sideways.
+        phone = self.clean[self.clean.index("@media (max-width: 720px)"):]
+        targets = re.search(r"\.chip,\s*\.btn-small,\s*\.disclose,\s*\.history-query,[^{]*\{\s*min-height: 2\.5rem;", phone)
+        self.assertIsNotNone(targets)
+        self.assertIn(".plain.wide.regs {\n    min-width: 0;", phone)
+
     def test_no_motion_for_people_who_ask_for_none(self) -> None:
         block = self.clean[self.clean.index("@media (prefers-reduced-motion: reduce)") :]
         for needle in ("animation-duration: 0.01ms !important;", "transition-duration: 0.01ms !important;",
@@ -1080,8 +1242,30 @@ class TestAppCss(unittest.TestCase):
         used = set(re.findall(r"(?<![-\w])color:\s*var\(--([\w-]+)\)", self.clean))
         self.assertEqual(used - {front for front, _back in TEXT_PAIRS}, set())
         backgrounds = set(re.findall(r"background(?:-color)?:\s*var\(--([\w-]+)\)", self.clean))
-        tested = {back for _front, back in TEXT_PAIRS} | {"accent"}
+        # The accent carries its own text colour (tested); the track of the switch holds no text,
+        # only its knob, whose edge is tested (border-strong against surface).
+        tested = {back for _front, back in TEXT_PAIRS} | {"accent", "border-strong"}
         self.assertEqual(backgrounds - tested, set())
+
+    def test_one_accent_and_state_colours_only_for_states(self) -> None:
+        # Calm neutrals and one accent, indigo. Green, amber and red only mark a state: a pill, a
+        # banner about a problem, an error, a line that went wrong.
+        light, dark = css_variables(self.css)
+        self.assertEqual(light["accent"].lower(), "#4f46e5")
+        self.assertEqual(light["accent-text"].lower(), "#ffffff")
+        self.assertEqual(dark["accent-text"].lower(), dark["bg"].lower(), "dark text on the light accent")
+        for scheme in (light, dark):
+            red, green, blue = (int(scheme["accent"][i : i + 2], 16) for i in (1, 3, 5))
+            self.assertGreater(blue, max(red, green) + 60, "the accent is an indigo: " + scheme["accent"])
+            self.assertLess(abs(red - green), 64, "an indigo, not a purple or a sky blue: " + scheme["accent"])
+            for name in ("bg", "surface", "surface-2", "text", "muted", "border"):
+                red, green, blue = (int(scheme[name][i : i + 2], 16) for i in (1, 3, 5))
+                self.assertLessEqual(max(red, green, blue) - min(red, green, blue), 16, name + " is a neutral")
+        allowed = {"pill-ok", "pill-warn", "pill-bad", "banner-bad", "error-title", "errorbox", "is-bad"}
+        for prelude, body in re.findall(r"([^{}]+)\{([^{}]*)\}", self.clean):
+            if re.search(r"var\(--(ok|warning|danger)(-soft)?\)", body):
+                with self.subTest(rule=prelude.strip()):
+                    self.assertTrue(set(re.findall(r"\.([\w-]+)", prelude)) & allowed, prelude.strip())
 
     def test_contrast_is_at_least_wcag_aa_in_both_schemes(self) -> None:
         for scheme, colours in zip(("light", "dark"), css_variables(self.css)):
