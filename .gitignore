@@ -1,0 +1,12 @@
+# Local state: databases, logs, generated passwords, the admin token. Never commit it.
+var/
+# The Python environment made by install.py.
+.venv/
+# Python's compiled files.
+__pycache__/
+*.pyc
+# This computer's settings (pcldb_config.example.json is the documented copy).
+pcldb_config.json
+# Files that pcldb dump and pcldb export-sqlite write (user names, token hashes, notes).
+*.jsonl
+*.sqlite

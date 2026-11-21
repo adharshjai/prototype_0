@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <title>PCL data</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="top-row">
+      <h1 class="brand">PCL data</h1>
+      <span id="engine-chip" class="chip" title="The database engine in use" hidden></span>
+      <span id="demo-chip" class="chip chip-warn" title="These are made-up demo sessions, not lab data." hidden>Demo data</span>
+      <div id="who" class="who" hidden>
+        <span id="user-name" class="user-name"></span>
+        <span id="user-role" class="chip" title="Your role"></span>
+        <button type="button" id="signout" class="btn btn-small">Sign out</button>
+      </div>
+    </div>
+    <nav id="tabs" class="tabs" aria-label="Views" hidden>
+      <a id="tab-normal" class="tab" href="#normal"><strong class="tab-name">Normal:</strong> <span class="tab-what">ask in plain English, files through Globus</span></a>
+      <a id="tab-expert" class="tab" href="#expert" hidden><strong class="tab-name">Expert:</strong> <span class="tab-what">SQL, files through SSH</span></a>
+      <a id="tab-status" class="tab" href="#status"><strong class="tab-name">Status</strong></a>
+    </nav>
+  </header>
+
+  <main id="main" class="main">
+    <noscript>
+      <p class="notice notice-bad">This page needs JavaScript. Allow it for this address, then reload the page.</p>
+    </noscript>
+
+    <section id="view-loading" class="card narrow">
+      <p id="boot-status" role="status" aria-live="polite">Starting...</p>
+      <button type="button" id="boot-retry" class="btn" hidden>Try again</button>
+    </section>
+
+    <section id="view-signin" class="card narrow" aria-labelledby="signin-title" hidden>
+      <h2 id="signin-title">Sign in</h2>
+      <p id="signin-note" class="note" role="status" aria-live="polite"></p>
+      <form id="signin-form" class="stack" method="post" autocomplete="off">
+        <label for="signin-token">Paste your access token</label>
+        <input id="signin-token" type="password" autocomplete="off" autocapitalize="off"
+               spellcheck="false" required aria-describedby="signin-note signin-help">
+        <div>
+          <button type="submit" id="signin-submit" class="btn btn-primary">Sign in</button>
+        </div>
+      </form>
+      <p id="signin-help" class="muted">On this computer the token is in the file <code>var/admin_token.txt</code>
+        in the project folder. You can also open the link printed by: <code>./pcldb.sh serve --open</code>
+        (Windows: <code>.\pcldb.cmd serve --open</code>)</p>
+    </section>
+
+    <div id="view-app" hidden>
+
+      <section id="panel-normal" class="panel" aria-labelledby="normal-title">
+        <h2 id="normal-title" tabindex="-1">Normal: ask a question</h2>
+        <form id="ask-form" class="stack" method="post" autocomplete="off">
+          <label for="ask-question">Your question about the lab's sessions</label>
+          <div class="ask-row">
+            <input id="ask-question" type="text" maxlength="500" autocomplete="off" required>
+            <button type="submit" id="ask-run" class="btn btn-primary">Ask</button>
+          </div>
+          <div class="check">
+            <input id="ask-simulated" type="checkbox">
+            <label for="ask-simulated">Include simulated sessions</label>
+          </div>
+        </form>
+        <div class="examples" role="group" aria-labelledby="examples-title">
+          <h3 id="examples-title" class="quiet-title">Or try one of these</h3>
+          <div id="ask-examples" class="example-list">
+            <button type="button" class="btn btn-example">Which sessions have adenine?</button>
+            <button type="button" class="btn btn-example">Show Raman sessions from the last 7 days</button>
+            <button type="button" class="btn btn-example">How many sessions per instrument?</button>
+            <button type="button" class="btn btn-example">Which sessions still need review?</button>
+            <button type="button" class="btn btn-example">Which sessions were partial or failed?</button>
+          </div>
+        </div>
+        <section class="lane-note" aria-labelledby="normal-files-title">
+          <h3 id="normal-files-title">Files in this mode</h3>
+          <p>In Normal mode you reach a session's files, and add new ones, through Globus.
+            Open a session in the results below to get its Globus link.</p>
+        </section>
+        <p id="ask-line" class="status-line">
+          <span id="ask-status" role="status" aria-live="polite"></span>
+          <span id="ask-elapsed" class="muted" aria-hidden="true"></span>
+          <button type="button" id="ask-cancel" class="btn btn-small" hidden>Cancel</button>
+        </p>
+        <div id="ask-results" class="results" aria-busy="false"></div>
+      </section>
+
+      <section id="panel-expert" class="panel" aria-labelledby="expert-title" hidden>
+        <h2 id="expert-title" tabindex="-1">Expert: SQL</h2>
+        <p class="lead">
+          <span id="sql-limit">A query can only read.</span>
+          <span id="sql-dialect" class="chip" title="The kind of SQL the database understands"></span>
+        </p>
+        <section class="lane-note" aria-labelledby="expert-files-title">
+          <h3 id="expert-files-title">Files in this mode</h3>
+          <p>In Expert mode you reach a session's files, and add new ones, over SSH. In a result, a value in a
+            column named <code>path</code> or <code>session_path</code> opens that session with its path on ARC
+            and commands you can copy.</p>
+          <div class="pair">
+            <label for="arc-user">Your ARC user name</label>
+            <input id="arc-user" type="text" maxlength="64" autocomplete="off" autocapitalize="off"
+                   spellcheck="false" aria-describedby="arc-user-help arc-user-status">
+          </div>
+          <p id="arc-user-help" class="muted small">It fills in the commands. It is kept only in this browser and is
+            never sent to the server. Empty the box to remove it.</p>
+          <p id="arc-user-status" class="side-status" role="status" aria-live="polite"></p>
+        </section>
+        <div class="sql-layout">
+          <div class="sql-main">
+            <label for="sql-text">Query</label>
+            <textarea id="sql-text" class="editor" rows="9" spellcheck="false" autocapitalize="off"
+                      autocomplete="off" aria-describedby="sql-hint"></textarea>
+            <p id="sql-hint" class="muted small">Ctrl+Enter or Cmd+Enter runs the query. Tab puts in two spaces.
+              Press Escape to leave the box.</p>
+            <div class="sql-actions">
+              <button type="button" id="sql-run" class="btn btn-primary">Run</button>
+              <button type="button" id="sql-cancel" class="btn" disabled>Cancel</button>
+              <span class="pair">
+                <label for="sql-examples">Examples</label>
+                <select id="sql-examples">
+                  <option value="">Choose one to load it</option>
+                </select>
+              </span>
+            </div>
+            <p id="sql-line" class="status-line">
+              <span id="sql-status" role="status" aria-live="polite"></span>
+            </p>
+            <div id="sql-error" class="errorbox" role="alert" hidden></div>
+            <div id="sql-result" class="results" aria-busy="false"></div>
+            <section class="history" aria-labelledby="history-title">
+              <h3 id="history-title">Your last queries</h3>
+              <p class="muted small">Click one to put it back into the box. It is not run until you press Run.</p>
+              <p id="history-status" class="side-status" role="status" aria-live="polite"></p>
+              <ol id="history-list" class="history-list"></ol>
+            </section>
+          </div>
+          <aside class="schema" aria-labelledby="schema-title">
+            <h3 id="schema-title">Tables and views</h3>
+            <p class="muted small">Click a name to put it into the query.</p>
+            <p id="schema-status" class="side-status" role="status" aria-live="polite"></p>
+            <button type="button" id="schema-retry" class="btn btn-small" hidden>Try again</button>
+            <ul id="schema-list" class="schema-list"></ul>
+          </aside>
+        </div>
+      </section>
+
+      <section id="panel-status" class="panel" aria-labelledby="status-title" hidden>
+        <div class="panel-head">
+          <h2 id="status-title" tabindex="-1">Status</h2>
+          <button type="button" id="status-refresh" class="btn btn-small">Refresh</button>
+        </div>
+        <p class="status-line">
+          <span id="status-line" role="status" aria-live="polite"></span>
+        </p>
+        <div id="status-cards" class="cards" aria-busy="false"></div>
+        <section class="lanes" aria-labelledby="lanes-title">
+          <h3 id="lanes-title">Two ways to work</h3>
+          <p>Every registered session can be found both ways, whichever way it was uploaded.</p>
+          <p id="lanes-you" class="muted"></p>
+          <div class="lane-columns">
+            <section class="card" aria-labelledby="lane-normal-title">
+              <h4 id="lane-normal-title">Normal</h4>
+              <dl class="lane-facts">
+                <dt>Who</dt>
+                <dd>Everyone who is signed in.</dd>
+                <dt>Find data</dt>
+                <dd>A question in plain English. The ARC assistant, or keyword rules when it cannot be
+                  reached, turns it into a search of the session index.</dd>
+                <dt>Get to the files</dt>
+                <dd>Globus: the session's folder opens in the Globus web app.</dd>
+                <dt>Add files</dt>
+                <dd>Globus Transfer.</dd>
+              </dl>
+            </section>
+            <section class="card" aria-labelledby="lane-expert-title">
+              <h4 id="lane-expert-title">Expert</h4>
+              <dl class="lane-facts">
+                <dt>Who</dt>
+                <dd>People with the analyst or admin role.</dd>
+                <dt>Find data</dt>
+                <dd>SQL that can only read, run on the database.</dd>
+                <dt>Get to the files</dt>
+                <dd>SSH: the path on ARC, and scp, sftp and rsync commands ready to copy.</dd>
+                <dt>Add files</dt>
+                <dd>An upload over SSH.</dd>
+              </dl>
+            </section>
+          </div>
+        </section>
+        <section class="registrations" aria-labelledby="registrations-title">
+          <h3 id="registrations-title">Newest registrations</h3>
+          <div id="status-registrations"></div>
+        </section>
+      </section>
+
+    </div>
+  </main>
+
+  <footer class="foot">
+    <span id="app-version"></span>
+  </footer>
+
+  <dialog id="detail" class="detail" aria-labelledby="detail-title">
+    <div class="detail-box">
+      <div class="detail-head">
+        <h2 id="detail-title">Session</h2>
+        <button type="button" id="detail-close" class="btn">Close</button>
+      </div>
+      <div id="detail-body" class="detail-body" aria-busy="false"></div>
+    </div>
+  </dialog>
+</body>
+</html>

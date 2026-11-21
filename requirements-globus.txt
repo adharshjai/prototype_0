@@ -1,0 +1,2 @@
+# Needed only for the live Globus Search service. The local search stand-in runs without it.
+globus-sdk>=4,<5

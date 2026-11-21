@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pcl-session/1",
+  "title": "pcl_session.json: the lab card of one session",
+  "description": "One small card per session, the same fields for every instrument. A later version only adds fields; a field never changes its meaning or type, because Globus Search keeps the first type it sees.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "instrument", "session", "session_id", "started_utc", "simulated", "sample_ids",
+               "completion", "format", "uploaded_utc", "written_by"],
+  "properties": {
+    "schema": {"const": "pcl-session/1", "description": "Always pcl-session/1."},
+    "instrument": {
+      "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+      "description": "The instrument slug. It equals the name of the instrument folder that holds the session."
+    },
+    "session": {
+      "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "not": {"pattern": "^[Ss][Ii][Mm][Uu][Ll][Aa][Tt][Ee][Dd]$"},
+      "description": "The session's name as its tool made it, without any _copyN."
+    },
+    "session_id": {
+      "type": "string", "minLength": 1, "maxLength": 256,
+      "description": "The tool's own unique id (Raman: session.json session_id). Copies share it."
+    },
+    "started_utc": {
+      "type": "string", "format": "utc", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$",
+      "description": "When acquisition started, ISO 8601 UTC with Z. Date searches use this, never a folder name."
+    },
+    "ended_utc": {
+      "type": ["string", "null"], "format": "utc", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$",
+      "description": "When the last item was taken (Raman: the newest point's completed_utc), or null."
+    },
+    "simulated": {
+      "type": "boolean",
+      "description": "True when any part was simulated or when nobody can tell; never null."
+    },
+    "sample_ids": {
+      "type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 256},
+      "description": "Sample identifiers as typed, always strings, always a list ([] when none)."
+    },
+    "operator": {"type": "string", "maxLength": 256, "description": "Who ran the session, as typed. Personal: kept out of Search unless the lab agrees."},
+    "location": {"type": "string", "maxLength": 256, "description": "Room or setup, as typed."},
+    "notes": {"type": "string", "maxLength": 20000, "description": "Free text typed at the instrument. Personal: kept out of Search unless the lab agrees."},
+    "method": {"type": "string", "maxLength": 64, "description": "The instrument's mode (Raman: scan_mode)."},
+    "items": {"type": "integer", "minimum": 0, "description": "How many measurements the session holds."},
+    "items_planned": {"type": "integer", "minimum": 0, "description": "How many measurements were planned."},
+    "completion": {
+      "enum": ["complete", "partial", "failed", "unknown"],
+      "description": "How the session ended. Raman: finished -> complete, stopped -> partial, failed -> failed, ended -> unknown."
+    },
+    "format": {"type": "string", "minLength": 1, "maxLength": 128, "description": "What the files are, e.g. raman-session/1 folder."},
+    "instrument_info": {"type": "object", "description": "Model, serial, firmware, unit as the instrument reports them. Never sent to Search."},
+    "uploaded_utc": {
+      "type": "string", "format": "utc", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$",
+      "description": "When the upload's copy was made."
+    },
+    "upload_id": {"type": "string", "minLength": 1, "maxLength": 64, "description": "The uploader's id (u followed by 12 hex digits)."},
+    "written_by": {
+      "type": "object", "additionalProperties": false, "required": ["name", "version"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64}
+      },
+      "description": "The program that wrote the card."
+    },
+    "tags": {
+      "type": "array", "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
+      "description": "Lab tags, lowercase [a-z0-9-]."
+    },
+    "extra": {"type": "object", "description": "Anything specific to one instrument. Kept in SQLite as JSON, never sent to Search."}
+  }
+}

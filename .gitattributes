@@ -1,0 +1,3 @@
+# No line-ending conversion anywhere: pcldb.cmd is committed with CRLF, every other file with
+# LF, so file hashes in the tests are the same on Windows (whatever core.autocrlf says).
+* -text

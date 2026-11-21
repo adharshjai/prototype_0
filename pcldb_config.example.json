@@ -1,0 +1,122 @@
+{
+  "_about": "Every setting of pcldb with its default value. 'pcldb setup' writes pcldb_config.json for you; to change a setting, put the key into that file. A key you leave out keeps the value shown here. JSON has no comments, so every key that starts with an underscore (like this one) is a note: pcldb ignores such keys at every level. Any other key that pcldb does not know is an error that names the key. Passwords, tokens and keys do not belong in this file.",
+  "database": {
+    "_about": {
+      "engine": "Where the records are kept: \"postgresql\" (a database server that pcldb starts and stops inside this folder) or \"sqlite\" (two plain files, nothing to install). The environment variable PCLDB_ENGINE overrides it.",
+      "postgresql": "Used only when engine is \"postgresql\".",
+      "sqlite": "Used only when engine is \"sqlite\"."
+    },
+    "engine": "postgresql",
+    "postgresql": {
+      "_about": {
+        "mode": "\"local\": pcldb keeps its own PostgreSQL in var/pgdata and makes the passwords itself (var/local_secrets.json). \"external\": use a PostgreSQL server that already runs; give the three connection strings below.",
+        "bin_dir": "The folder with PostgreSQL's programs (initdb, pg_ctl, postgres). null means: look in the usual places and take the newest. PCLDB_PG_BIN overrides it.",
+        "port": "The port of the local PostgreSQL on 127.0.0.1. Change it when another program already uses it; stay below 49152, because Windows hands out the ports above that to other programs.",
+        "name": "The name of the database inside the local PostgreSQL.",
+        "external": "Used only when mode is \"external\"."
+      },
+      "mode": "local",
+      "bin_dir": null,
+      "port": 15439,
+      "name": "pcl",
+      "external": {
+        "_about": {
+          "owner": "Connection string of the role that creates the tables (used by setup and reset only). Better: leave null here and set PCLDB_PG_OWNER_DSN, so the password is not in a file.",
+          "app": "Connection string of the role pcl_app, which reads and writes the records (PCLDB_PG_APP_DSN).",
+          "reader": "Connection string of the role pcl_reader, which may only read the catalogue; expert SQL runs as this role (PCLDB_PG_READER_DSN)."
+        },
+        "owner": null,
+        "app": null,
+        "reader": null
+      }
+    },
+    "sqlite": {
+      "_about": {
+        "folder": "The folder of the two SQLite files, pcl_app.sqlite and pcl_catalog.sqlite. A relative path starts at the project folder."
+      },
+      "folder": "var/sqlite"
+    }
+  },
+  "server": {
+    "_about": {
+      "host": "The address the website and the API listen on. Keep 127.0.0.1: prototype_0 is made for one computer.",
+      "port": "The port of the website: http://127.0.0.1:8787.",
+      "allowed_hosts": "Extra names the browser may use to reach the server, each written as \"name:port\". Leave empty unless you know you need one."
+    },
+    "host": "127.0.0.1",
+    "port": 8787,
+    "allowed_hosts": []
+  },
+  "storage": {
+    "_about": {
+      "collection_id": "The Globus collection that holds the lab's files. The default is ARC's public Projects collection.",
+      "collection_root": "The folder on ARC that the collection shows as its top folder.",
+      "project_path": "The lab's project folder on ARC. It must be inside collection_root.",
+      "ssh_host": "The ARC computer that takes SSH file transfers (scp, sftp, rsync). The expert view builds its copy commands with it."
+    },
+    "collection_id": "8e804f3a-5bac-4b6d-9836-bcd5b9c133ec",
+    "collection_root": "/projects",
+    "project_path": "/projects/pcl_photonics",
+    "ssh_host": "datatransfer.arc.vt.edu"
+  },
+  "search": {
+    "_about": {
+      "backend": "\"local\": search this computer's copy of the index. \"globus\": ask the Globus Search service (needs a sign-in and an index).",
+      "index_id": "The id of the lab's Globus Search index, or null while there is none.",
+      "visible_to": "Who may see the entries in Globus Search, as Globus identity or group names (urn:globus:...). Empty means: only the person who pushes them. Entries are never public. After changing it (or include_operator / include_notes), run: pcldb search reindex, then pcldb search push.",
+      "client_id": "The Globus app id that the sign-in for Globus Search uses. The default is the public id of the Globus SDK tutorial app; a lab can register its own at app.globus.org.",
+      "include_operator": "true to put the operator's name into the search entries. It is personal information, so the default is false.",
+      "include_notes": "true to put the session notes into the search entries. They can be personal, so the default is false.",
+      "fallback_to_local": "When Globus Search cannot be reached: true answers from this computer's copy and says so; false reports the failure."
+    },
+    "backend": "local",
+    "index_id": null,
+    "visible_to": [],
+    "client_id": "61338d24-54d5-408f-a10d-66c06b59f6d2",
+    "include_operator": false,
+    "include_notes": false,
+    "fallback_to_local": true
+  },
+  "llm": {
+    "_about": {
+      "enabled": "false turns the ARC assistant off; questions are then read by keyword rules.",
+      "base_url": "The address of the ARC LLM service. It answers only on the VT campus network or VPN. PCLDB_LLM_BASE_URL overrides it.",
+      "model": "The model to ask. PCLDB_LLM_MODEL overrides it.",
+      "reasoning_effort": "How hard the model thinks before it answers (low, medium or high). Empty leaves the field out of the request.",
+      "response_format": "true asks the service for JSON output with its response_format field. The service does not document that field, so the default is false.",
+      "max_concurrent": "How many requests to the assistant may run at the same time.",
+      "api_key_file": "A file whose first line is your ARC LLM key, or null. The key is looked for in this order: the environment variable PCLDB_LLM_API_KEY, this file, the file arc_llm_api_key in your .pcldb folder. Never write the key itself into this file.",
+      "timeout_seconds": "How long to wait for the assistant before giving up."
+    },
+    "enabled": true,
+    "base_url": "https://llm-api.arc.vt.edu/api/v1",
+    "model": "gpt-oss-120b",
+    "reasoning_effort": "low",
+    "response_format": false,
+    "max_concurrent": 2,
+    "api_key_file": null,
+    "timeout_seconds": 90
+  },
+  "ask": {
+    "_about": {
+      "include_simulated_default": "Whether the \"Include simulated sessions\" box of the website's Normal view starts ticked, and whether pcldb ask and the API include simulated sessions when they are not told.",
+      "max_results": "How many results the assistant is shown when it writes its answer.",
+      "per_user_per_minute": "How many questions one person may ask per minute."
+    },
+    "include_simulated_default": true,
+    "max_results": 20,
+    "per_user_per_minute": 20
+  },
+  "sql": {
+    "_about": {
+      "max_rows": "The most rows one expert SQL query returns.",
+      "timeout_seconds": "How long one expert SQL query may run.",
+      "max_cell_chars": "Longer text values are cut at this many characters.",
+      "max_sql_chars": "The longest SQL text that is accepted."
+    },
+    "max_rows": 1000,
+    "timeout_seconds": 15,
+    "max_cell_chars": 10000,
+    "max_sql_chars": 20000
+  }
+}

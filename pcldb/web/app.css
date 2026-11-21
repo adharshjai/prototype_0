@@ -1,0 +1,1360 @@
+/*
+ * PCL data: the one style sheet of the website.
+ * No outside fonts, images or imports. Colours and sizes come from the custom properties below;
+ * tests/test_web_static.py checks that the text colours keep WCAG AA contrast in both schemes.
+ */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #eceef2;
+  --text: #1b1f24;
+  --muted: #545c69;
+  --border: #c5cad3;
+  --border-strong: #6f7785;
+  --accent: #1a5fb4;
+  --accent-text: #ffffff;
+  --accent-soft: #e3edfa;
+  --danger: #a51d2d;
+  --danger-soft: #fbe9eb;
+  --warning: #7a4a00;
+  --warning-soft: #fdf1d3;
+  --ok: #1a6b3c;
+  --ok-soft: #e4f4ea;
+  --radius: 6px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15181d;
+    --surface: #1d2127;
+    --surface-2: #272c35;
+    --text: #e7eaee;
+    --muted: #a7afbb;
+    --border: #3a414d;
+    --border-strong: #7d8796;
+    --accent: #8cb8f5;
+    --accent-text: #0d1b2e;
+    --accent-soft: #1f3350;
+    --danger: #ff9d9d;
+    --danger-soft: #3b1e22;
+    --warning: #f0c36a;
+    --warning-soft: #3a2f14;
+    --ok: #7fd4a0;
+    --ok-soft: #17331f;
+  }
+}
+
+/* ---- base ---------------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 1rem;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  line-height: 1.25;
+}
+
+h2 {
+  margin-bottom: var(--space-3);
+  font-size: 1.25rem;
+}
+
+h3,
+h4 {
+  margin-bottom: var(--space-2);
+  font-size: 1rem;
+}
+
+p {
+  margin: 0 0 var(--space-3);
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--mono);
+  font-size: 0.875em;
+}
+
+code {
+  white-space: nowrap;
+}
+
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A view's heading gets the focus when the view is opened, so the keyboard goes on from there.
+   It is not a control, so it shows no ring. */
+h2[tabindex="-1"]:focus {
+  outline: none;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 0.875rem;
+}
+
+.none {
+  color: var(--muted);
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- header and the switch between the views ------------------------------------------------ */
+
+.top {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.top-row,
+.tabs,
+.main,
+.foot {
+  max-width: 80rem;
+  margin: 0 auto;
+  padding-right: var(--space-4);
+  padding-left: var(--space-4);
+}
+
+.top-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-2);
+}
+
+.brand {
+  margin-right: var(--space-2);
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.user-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-1);
+}
+
+/* Each entry says the mode and, in smaller words, what the mode is: "Normal: ask in plain
+   English, files through Globus". */
+.tab {
+  display: inline-block;
+  padding: 10px 14px;
+  border-bottom: 3px solid transparent;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.tab:hover {
+  background: var(--surface-2);
+}
+
+.tab-name {
+  font-weight: 700;
+}
+
+.tab-what {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.tab[aria-current="page"] {
+  border-bottom-color: var(--accent);
+}
+
+.tab[aria-current="page"] .tab-name {
+  color: var(--accent);
+}
+
+/* On a narrow screen the entries stand below each other, and the mark moves to the left edge. */
+@media (max-width: 700px) {
+  .tabs {
+    flex-direction: column;
+    padding-bottom: var(--space-2);
+  }
+
+  .tab {
+    padding: 6px 10px;
+    border-bottom: 0;
+    border-left: 3px solid transparent;
+  }
+
+  .tab[aria-current="page"] {
+    border-left-color: var(--accent);
+  }
+}
+
+.main {
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-5);
+}
+
+.foot {
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-4);
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.panel {
+  min-width: 0;
+}
+
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.panel-head h2 {
+  margin-bottom: 0;
+}
+
+.lead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* "Files in this mode": how the mode reaches the files (Globus or SSH). */
+.lane-note {
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+
+.lane-note > :last-child {
+  margin-bottom: 0;
+}
+
+.lane-note .pair {
+  margin-bottom: var(--space-2);
+}
+
+.lane-note .pair input {
+  width: 16rem;
+}
+
+/* The Status view: the two modes next to each other. */
+.lanes {
+  margin-bottom: var(--space-5);
+}
+
+.lane-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: var(--space-4);
+}
+
+.lane-facts {
+  margin: 0;
+}
+
+.lane-facts dt {
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.lane-facts dt:first-child {
+  margin-top: 0;
+}
+
+.lane-facts dd {
+  margin: 0;
+}
+
+/* ---- cards, notices, chips ----------------------------------------------------------------- */
+
+.card {
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.card > :last-child {
+  margin-bottom: 0;
+}
+
+.narrow {
+  max-width: 34rem;
+  margin: var(--space-5) auto;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.registrations {
+  margin-top: var(--space-5);
+}
+
+.notice {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  color: var(--text);
+}
+
+.notice:empty,
+.note:empty {
+  display: none;
+}
+
+.note {
+  margin: 0 0 var(--space-3);
+  color: var(--muted);
+}
+
+.notice-bad {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+.notices > :last-child {
+  margin-bottom: 0;
+}
+
+.chip,
+.tag {
+  display: inline-block;
+  padding: 1px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.chip:empty {
+  display: none;
+}
+
+.chip-warn,
+.tag-warn,
+.tag-sim {
+  background: var(--warning-soft);
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.tag-sim {
+  border-style: dashed;
+}
+
+.tag-ok {
+  background: var(--ok-soft);
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.tag-bad {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.marks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+}
+
+/* ---- forms and buttons --------------------------------------------------------------------- */
+
+label {
+  font-weight: 600;
+}
+
+.stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+input[type="text"],
+input[type="password"],
+textarea,
+select {
+  max-width: 100%;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+}
+
+input[type="text"],
+input[type="password"],
+textarea {
+  width: 100%;
+}
+
+input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.check label {
+  font-weight: 400;
+}
+
+.ask-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.ask-row input {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.5rem;
+  padding: 8px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.25;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--surface-2);
+}
+
+.btn:disabled {
+  background: var(--surface);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-primary,
+.btn-primary:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.btn-primary:hover {
+  box-shadow: inset 0 0 0 99px rgba(0, 0, 0, 0.14);
+}
+
+.btn-primary:disabled {
+  background: var(--accent);
+  box-shadow: none;
+}
+
+.btn-small {
+  min-height: 2rem;
+  padding: 4px 10px;
+  font-size: 0.875rem;
+}
+
+.btn-example {
+  justify-content: flex-start;
+  font-size: 0.9375rem;
+  font-weight: 400;
+  text-align: left;
+}
+
+/* Buttons that read as links: a session name, a table or column name, an earlier query. */
+.rowlink,
+.insert,
+.history-query,
+.disclose {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.rowlink {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: normal;
+}
+
+.rowlink.mono {
+  font-family: var(--mono);
+  font-size: 0.875em;
+  font-weight: 400;
+}
+
+.insert,
+.history-query {
+  min-height: 1.5rem;
+  font-family: var(--mono);
+  font-size: 0.875rem;
+}
+
+.insert {
+  font-weight: 600;
+}
+
+.insert:hover,
+.history-query:hover,
+.disclose:hover {
+  text-decoration: underline;
+}
+
+.examples {
+  margin: var(--space-3) 0;
+}
+
+.quiet-title {
+  margin-bottom: var(--space-2);
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.example-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* ---- status lines and results -------------------------------------------------------------- */
+
+.status-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2rem;
+  margin: var(--space-2) 0;
+}
+
+.status-line.is-busy::before {
+  content: "";
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.is-bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.side-status {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.side-status:empty {
+  display: none;
+}
+
+.side-status.is-bad {
+  color: var(--danger);
+}
+
+.results {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  min-width: 0;
+  transition: opacity 0.15s;
+}
+
+.results[aria-busy="true"],
+.cards[aria-busy="true"] {
+  opacity: 0.55;
+}
+
+.answer,
+.how,
+.empty {
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.answer {
+  border-left: 4px solid var(--accent);
+}
+
+.empty {
+  border-style: dashed;
+  border-color: var(--border-strong);
+}
+
+.how > :last-child,
+.empty > :last-child {
+  margin-bottom: 0;
+}
+
+.answer-label {
+  margin-bottom: var(--space-2);
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+/* The assistant's text can be long: past a screenful it scrolls inside its own box. */
+.answer-text {
+  max-height: 24rem;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.interpretation {
+  font-weight: 600;
+}
+
+.empty-title {
+  font-size: 1.125rem;
+  font-weight: 700;
+}
+
+.count {
+  margin: 0;
+  font-weight: 600;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: fit-content(60%) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
+  margin: 0 0 var(--space-3);
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.raw > summary {
+  width: fit-content;
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.code,
+.error-text {
+  max-height: 24rem;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  overflow: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Long text of a record (notes): it scrolls inside its own box and keeps its line ends. */
+.longtext {
+  max-height: 14rem;
+  padding: var(--space-2) var(--space-3);
+  overflow: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+}
+
+.raw > .muted {
+  margin: var(--space-2) 0 0;
+}
+
+/* ---- tables -------------------------------------------------------------------------------- */
+
+/* A table scrolls inside its own box, so a wide table never widens the page. */
+.scroll {
+  max-width: 100%;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+caption {
+  padding: var(--space-2) var(--space-3);
+  font-weight: 600;
+  text-align: left;
+}
+
+th,
+td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+thead th {
+  background: var(--surface-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+tbody th {
+  font-weight: 600;
+}
+
+tbody tr:last-child > th,
+tbody tr:last-child > td {
+  border-bottom: 0;
+}
+
+td.num {
+  text-align: right;
+}
+
+td time {
+  white-space: nowrap;
+}
+
+.sessions,
+.wide {
+  min-width: 46rem;
+}
+
+/* The name column keeps room for a session name, so it does not wrap after every part. */
+.sessions tbody th,
+.wide tbody th {
+  min-width: 19rem;
+}
+
+.plain {
+  min-width: 30rem;
+}
+
+.plain tbody th {
+  font-weight: 400;
+}
+
+.facet-box {
+  width: fit-content;
+  min-width: min(100%, 16rem);
+}
+
+.facet thead th:last-child {
+  text-align: right;
+}
+
+.clickrow {
+  cursor: pointer;
+}
+
+.clickrow:hover {
+  background: var(--accent-soft);
+}
+
+/* The result grid of the Expert view: column names stay in view while the rows scroll. */
+.grid-box {
+  max-height: 70vh;
+}
+
+.grid {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+.grid th,
+.grid td {
+  padding: var(--space-1) var(--space-3);
+  white-space: nowrap;
+}
+
+.grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--border-strong);
+  vertical-align: bottom;
+}
+
+.grid tbody tr:hover {
+  background: var(--surface-2);
+}
+
+.colname {
+  display: block;
+}
+
+.coltype {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.grid .coltype {
+  display: block;
+}
+
+.cell-null {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* A session path in the grid: a button that opens the session. */
+.cellpath {
+  font-weight: 400;
+}
+
+.cell-num {
+  text-align: right;
+}
+
+.result-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/* ---- the Expert view ------------------------------------------------------------------------ */
+
+.sql-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.schema {
+  min-width: 0;
+  max-height: 40vh;
+  padding: var(--space-3);
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.sql-main {
+  min-width: 0;
+}
+
+/* The query box comes first in the page (on a phone it is the first thing under the note);
+   on a wide screen the list of tables stands in a column to its left. */
+@media (min-width: 900px) {
+  .sql-layout {
+    grid-template-columns: minmax(15rem, 21rem) minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .sql-main {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .schema {
+    grid-column: 1;
+    grid-row: 1;
+    position: sticky;
+    top: var(--space-3);
+    max-height: calc(100vh - 2 * var(--space-3));
+  }
+}
+
+.schema-list,
+.columns,
+.history-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.schema-object {
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+
+.schema-object:first-child {
+  border-top: 0;
+}
+
+.schema-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.schema-desc {
+  margin: 2px 0 var(--space-1);
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.disclose {
+  min-height: 1.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.disclose::before {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid currentColor;
+  transition: transform 0.15s;
+}
+
+.disclose[aria-expanded="true"]::before {
+  transform: rotate(90deg);
+}
+
+.columns {
+  margin: var(--space-1) 0 0 var(--space-1);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border);
+}
+
+.column {
+  padding: 2px 0;
+}
+
+.column .coltype,
+.colnull {
+  margin-left: var(--space-2);
+}
+
+.colnull {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.editor {
+  display: block;
+  min-height: 9rem;
+  margin-top: var(--space-1);
+  font-family: var(--mono);
+  line-height: 1.45;
+  tab-size: 2;
+  resize: vertical;
+}
+
+.sql-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.pair {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pair select {
+  min-width: 0;
+}
+
+.errorbox {
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+}
+
+.errorbox > :last-child {
+  margin-bottom: 0;
+}
+
+.error-title {
+  margin-bottom: var(--space-2);
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.error-text {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.history {
+  margin-top: var(--space-5);
+}
+
+.history-item {
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+
+.history-meta {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.history-meta .is-bad {
+  font-weight: 400;
+}
+
+/* ---- the session detail panel -------------------------------------------------------------- */
+
+.detail {
+  width: min(60rem, calc(100vw - 1rem));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+}
+
+.detail::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+/* The box scrolls as a whole and its heading stays in view, so the keyboard can scroll it from
+   the Close button. Scrolling past its end does not move the page behind it. */
+.detail-box {
+  max-height: calc(100vh - 1.5rem);
+  max-height: calc(100dvh - 1.5rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.detail-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-head h2 {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.group,
+.actions {
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.group > :last-child,
+.actions > :last-child {
+  margin-bottom: 0;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.action-row:empty {
+  display: none;
+}
+
+.arc-path {
+  margin: 0 0 var(--space-2);
+}
+
+/* The file actions of one mode. When the panel shows both, a line parts them. */
+.lane-actions {
+  margin-bottom: var(--space-3);
+}
+
+.lane-actions + .lane-actions {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.lane-actions > :last-child {
+  margin-bottom: 0;
+}
+
+.commands {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.command {
+  margin-top: var(--space-2);
+}
+
+.command-label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.command-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.command-line code {
+  flex: 1 1 16rem;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.path {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.copy-status {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+}
+
+.copy-status:empty {
+  display: none;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: minmax(8rem, 14rem) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+}
+
+.fields dt {
+  color: var(--muted);
+}
+
+.fields dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.fields .facts {
+  margin-bottom: var(--space-1);
+}
+
+.utc {
+  display: inline-block;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+  .fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .fields dd {
+    margin-bottom: var(--space-2);
+  }
+}
+
+/* ---- forced colours (Windows high contrast): the current view keeps a visible mark ---------- */
+
+@media (forced-colors: active) {
+  .tab {
+    border-color: Canvas;
+  }
+
+  .tab[aria-current="page"] {
+    border-color: Highlight;
+  }
+}
+
+/* ---- less motion for people who ask for it ------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .status-line.is-busy::before {
+    border-top-color: var(--border-strong);
+    animation: none;
+  }
+}
