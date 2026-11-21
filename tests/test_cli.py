@@ -525,10 +525,13 @@ class TestSetupSqlite(TempFolderCase):
         self.assertEqual(self.loaded_settings().database.engine, "sqlite")
 
     def test_a_first_setup_that_cannot_work_writes_nothing(self):
-        from pcldb.store import pgcluster
+        from pcldb.store import pgcluster, postgres_engine
         missing = PclError("PostgreSQL's programs were not found. Install PostgreSQL or run: "
                            "pcldb setup --engine sqlite", code="postgres_missing", status=503)
+        # psycopg counts as installed (also on a bare Python), so that the missing programs are
+        # what stops this setup on every machine.
         with mock.patch.object(pgcluster, "choose_pg_bin", side_effect=missing), \
+                mock.patch.object(postgres_engine, "load_psycopg", return_value=None), \
                 mock.patch.object(cli.importlib.util, "find_spec", return_value=object()):
             code, _out, err = self.run_cli("setup", "--engine", "postgresql")
         self.assertEqual(code, 1)

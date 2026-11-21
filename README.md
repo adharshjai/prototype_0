@@ -74,8 +74,8 @@ What each step does:
 `./pcldb.sh doctor` checks everything and prints one line per check (OK or PROBLEM, and the
 fix). `./pcldb.sh --help` lists every command; `./pcldb.sh setup --help` explains one.
 
-Messages, and the rest of this README, write a command as `pcldb <command>`: type
-`./pcldb.sh <command>` on a Mac or Linux, and `.\pcldb.cmd <command>` on Windows.
+Messages, and the rest of this README, name a command with a plain `pcldb`, as in
+`pcldb doctor`: type `./pcldb.sh` in its place on a Mac or Linux, and `.\pcldb.cmd` on Windows.
 
 SQLite needs nothing installed. For PostgreSQL instead, install it once and leave out
 `--engine`, in a folder that has no `pcldb_config.json` yet (a folder that was set up keeps its

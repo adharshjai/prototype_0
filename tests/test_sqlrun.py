@@ -374,8 +374,12 @@ class SqlRunCases:
                 self.run_sql(sql, user_name="demo-reviewer")
             self.assertEqual(caught.exception.code, code, sql)
         rows = self.log_rows("demo-reviewer")
-        self.assertEqual([row["query_text"] for row in rows], [sql for sql, _code in cases])
-        for row, (_sql, code) in zip(rows, cases):
+        # Rows written within the same millisecond come back in any order: match them by text.
+        by_text = {row["query_text"]: row for row in rows}
+        self.assertEqual(len(rows), len(cases))
+        self.assertEqual(sorted(by_text), sorted(sql for sql, _code in cases))
+        for sql, code in cases:
+            row = by_text[sql]
             self.assertIs(row["ok"], False)
             self.assertIsNone(row["n_rows"])
             self.assertTrue(row["error_text"].startswith(code + ": "), row["error_text"])
