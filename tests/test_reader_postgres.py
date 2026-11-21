@@ -315,13 +315,16 @@ HOSTILE = [
     ("SELECT txid_current() > 0", OK, "what stays possible: one transaction id per query"),
 ]
 
-# Statements that make the server build a value of hundreds of megabytes. On a slow machine
-# (the Windows runner of the GitHub checks) that takes longer than TIMEOUT, so they get a longer
-# limit: what they prove is their outcome (the cell is cut, nothing private comes back,
-# nothing changes), not the speed of the machine. The hard stop still bounds them.
+# Statements that make the server build a value of hundreds of megabytes, or fill a temporary
+# file up to temp_file_limit. On a slow machine (the Windows runners of the GitHub checks) that
+# takes longer than TIMEOUT, so they get a longer limit: what they prove is their outcome (the
+# cell is cut, the limit refuses, nothing private comes back, nothing changes), not the speed of
+# the machine. The hard stop still bounds them.
 SLOW = {
     "SELECT repeat('x', 300000000)": 30.0,
     "SELECT length(repeat('x', 200000000))": 30.0,
+    "SELECT g FROM generate_series(1, 100000000) g": 30.0,
+    "SELECT count(*) FROM generate_series(1, 100000000000)": 30.0,
 }
 
 
