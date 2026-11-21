@@ -55,12 +55,6 @@ def _what_to_do(settings):
                 "records are in it." % _INSTALL)
     return "%s or run: pcldb setup --engine sqlite" % _INSTALL
 
-# Variables that would make the programs look somewhere else than where pcldb points them.
-_PG_VARIABLES = (
-    "PGDATA", "PGPORT", "PGHOST", "PGHOSTADDR", "PGUSER", "PGPASSWORD", "PGDATABASE",
-    "PGSERVICE", "PGSERVICEFILE", "PGOPTIONS", "PGPASSFILE", "PGCLIENTENCODING", "PGTZ",
-    "PGDATESTYLE", "PGAPPNAME", "PGCTLTIMEOUT", "PGSSLMODE", "PGCONNECT_TIMEOUT",
-)
 
 _CONF_BEGIN = "# --- pcldb settings: pcldb rewrites this block; change pcldb_config.json instead ---"
 _CONF_END = "# --- end of pcldb settings ---"
@@ -251,10 +245,12 @@ def choose_pg_bin(settings):
 
 
 def child_environment(env=None, system=None):
-    """The environment for PostgreSQL's programs: no PG* variables, and a locale on macOS."""
-    result = dict(os.environ if env is None else env)
-    for name in _PG_VARIABLES:
-        result.pop(name, None)
+    """The environment for PostgreSQL's programs: no PG* variables, and a locale on macOS.
+
+    Every variable whose name starts with PG goes (PGDATA, PGPORT, PGUSER, ... and also PGBIN or
+    PGROOT, which installers set), in any mix of capitals: names on Windows ignore case."""
+    result = {name: value for name, value in (os.environ if env is None else env).items()
+              if not name.upper().startswith("PG")}
     if (system or current_system()) == "darwin":
         if not (result.get("LC_ALL") or "").strip() and not (result.get("LANG") or "").strip():
             # Without any locale the server stops with "postmaster became multithreaded during
@@ -528,9 +524,16 @@ class LocalCluster:
                 pass
         if code != 0 or not self.is_initialized():
             shutil.rmtree(self.data_dir, ignore_errors=True)
+            said = _tail(output_file)
+            hint = ""
+            if current_system() == "windows" and "Permission denied" in said:
+                hint = ("\nOn Windows, PostgreSQL's programs run with reduced rights and cannot "
+                        "use a folder that only administrators may open. Put the project in a "
+                        "folder in your own user profile (for example C:\\Users\\<you>\\pcldb) "
+                        "and run the command again.")
             raise PclError(
-                "PostgreSQL could not create its data folder %s. What initdb said (%s):\n%s"
-                % (self.data_dir, output_file, _tail(output_file)), code="postgres_failed",
+                "PostgreSQL could not create its data folder %s. What initdb said (%s):\n%s%s"
+                % (self.data_dir, output_file, said, hint), code="postgres_failed",
                 status=503)
         self._write_conf()
         return True

@@ -40,6 +40,17 @@ On both engines:
   is cancelled from the client side when the deadline passes, and is rolled back.
 - `pcldb doctor` and `/status` ask the database, as the reader itself, whether it could read
   private data or change anything. If so, expert mode is switched off (`sandbox_unsafe`).
+- The server writes its messages in its own language (`lc_messages`; a lab server may answer in
+  German, for example, and the reader cannot change that). So pcldb never reads the words of a
+  message to decide what happened. A parameter mark such as `$1` is told apart from a lost
+  connection by the error code, the state of the session (still alive) and the `$n` in the SQL
+  text. The private schema is recognised by the error code for a missing right together with
+  the schema's name in the error (a name stays as it is in every language); a table that is
+  only called `app` in the query keeps the server's own sentence. Both get the same sentence as
+  on SQLite. A second statement is recognised by the syntax error code and text after the first
+  `;`, `SELECT ... INTO` by the key word `INTO`, a `WITH` part that writes by its `INSERT`,
+  `UPDATE`, `DELETE` or `MERGE`, and the time limit by the time that has passed. The server's
+  own words are only passed on after "PostgreSQL said:".
 
 **What a reader can still see or do on PostgreSQL** (no setting can hide it):
 
@@ -69,6 +80,16 @@ On both engines:
 - Then limits: no further files can be attached, at most 10 MB per value, the SQL length limit,
   `query_only`, no trusted schema, extensions off, and limits on pattern length, expression depth
   and compound queries.
+- Deep nesting is refused before SQLite reads the text: brackets at most 100 deep, and at most
+  200 `SELECT` key words (sub-queries also nest without brackets, for example a chain of `WITH`
+  parts that each read the one before). Strings and comments do not count. SQLite checks the
+  depth of an expression only after it has walked it, and a chain of `WITH` parts that each put
+  operators on the column of the one before becomes one expression as deep as all of them. So
+  each statement runs in a thread of its own with 32 MB of stack, and on SQLite the text may be
+  at most 30,000 characters long, whatever `sql.max_sql_chars` says. The depth can never be
+  more than the length, and 32 MB held about 72,000 levels when measured (SQLite 3.50 on macOS,
+  arm64), so a deeply nested statement ends in a message, not in a crash of the server,
+  whatever thread sent it.
 - Then an authorizer that allows only reading: `PRAGMA`, `ATTACH`, `VACUUM`, every write,
   transactions and temporary tables are refused. Only the catalogue's own tables and views,
   `sqlite_master` and the JSON table functions may be read, and only functions on an allow-list
@@ -215,9 +236,12 @@ pcldb gives a new index a bland name.
   With the Globus backend, every website user searches with that one person's Globus identity.
 - **Every role sees every session's full record** (`GET /session`), operator and notes
   included. There are no per-record access rules.
-- **The Status view shows where the data is.** On SQLite that is the full folder path, which
-  usually holds the account name of the person running pcldb (`/Users/<name>/...`,
-  `C:\Users\<name>\...`); every signed-in user sees it.
+- **Slow requests hold a server thread.** The server has no cap on its threads. A request body
+  may arrive slowly (at least 16 KB in every 30-second window, and all of it within 30 seconds
+  plus one second per 16 KB: about 17 minutes for the 16 MB limit). After a refused token the
+  server still reads the rest of the body and throws it away, so that the client sees the
+  refusal rather than a broken connection. A program on this computer could therefore keep
+  threads busy for minutes; the server listens on this computer only.
 - **Rate limits live in memory** (questions per person per minute) and start again when the
   server restarts. There is no lockout after wrong tokens (a token has 43 random characters, so
   guessing is not practical).

@@ -193,6 +193,50 @@ class TestJsonValue(unittest.TestCase):
             deep = [deep]
         self.assertIsInstance(self.convert(deep), str)      # no crash on absurd nesting
 
+    def test_deep_nesting_gives_the_same_answer_on_every_python(self):
+        def nest(levels, inner, kind="list"):
+            value = inner
+            for _level in range(levels):
+                value = [value] if kind == "list" else {"k": value}
+            return value
+
+        def depth_and_inside(value):
+            levels = 0
+            while isinstance(value, (list, dict)):
+                value = value[0] if isinstance(value, list) else value["k"]
+                levels += 1
+            return levels, value
+
+        big = 1_000_000
+        # 150 levels (and 200, the limit) come back whole, on 3.11 too.
+        for levels in (150, 200):
+            for kind in ("list", "dict"):
+                converted = self.convert(nest(levels, 7, kind), big)
+                self.assertIsInstance(converted, list if kind == "list" else dict)
+                self.assertEqual(depth_and_inside(converted), (levels, 7), (levels, kind))
+        # Deeper: the first 200 levels, then a short note instead of the rest (not a crash, not
+        # a text whose form depends on the Python version).
+        for levels in (201, 5000):
+            for kind in ("list", "dict"):
+                converted = self.convert(nest(levels, 7, kind), big)
+                self.assertEqual(depth_and_inside(converted),
+                                 (200, "[nested too deeply to show]"), (levels, kind))
+        loop = []
+        loop.append(loop)                                   # a list that holds itself
+        self.assertEqual(depth_and_inside(self.convert(loop, big)),
+                         (200, "[nested too deeply to show]"))
+
+    def test_a_key_whose_text_fails_is_named_by_its_kind(self):
+        class Endless:
+            def __str__(self):
+                raise RecursionError("maximum recursion depth exceeded")
+            __repr__ = __str__
+
+            def __hash__(self):
+                return 1
+
+        self.assertEqual(self.convert({Endless(): 1}), {"<Endless>": 1})
+
 
 class TestFormats(unittest.TestCase):
     RESULT = {"columns": [{"name": "folder", "type": "text"}, {"name": "n", "type": "integer"},

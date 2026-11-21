@@ -851,6 +851,22 @@ class TestHardening(ServerCase, support.SqliteCase, unittest.TestCase):
             self.assertLess(time.monotonic() - started, 5)
         self.assertEqual(http(self.port, "GET", "/api/v1/health").status, 200)
 
+    def test_a_refusal_before_the_body_reaches_a_client_that_sends_it_all_first(self):
+        # SEC2-01: pcldb.client (urllib) sends the whole body before it reads the answer. A
+        # 401 or 403 sent before the body is read must still reach it, for a body of several
+        # MB, as the 401 or 403 (it used to be "could not be reached": a broken pipe).
+        from pcldb.client import Client
+        from pcldb.errors import PclError
+        document = {"pad": "x" * (8 * 1024 * 1024)}
+        address = "http://127.0.0.1:%d" % self.port
+        for token, status, code in (("pcl_" + "A" * 43, 401, "unauthorized"),
+                                    (self.tokens["viewer"], 403, "forbidden")):
+            with self.assertRaises(PclError) as caught:
+                Client(address, token, timeout=60).register(document)
+            self.assertEqual((caught.exception.status, caught.exception.code), (status, code),
+                             caught.exception.message)
+        self.assertEqual(http(self.port, "GET", "/api/v1/health").status, 200)
+
     def test_no_cors(self):
         preflight = http(self.port, "OPTIONS", "/api/v1/ask",
                          headers={"Origin": "https://evil.example",
@@ -1033,6 +1049,90 @@ class TestSlowClients(ServerCase, support.SqliteCase, unittest.TestCase):
                 break
         self.assertTrue(closed, "the server still waited after 6 s")
         self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(http(self.port, "GET", "/api/v1/health", timeout=5).status, 200)
+
+    def post_head(self, length, path="/api/v1/registrations"):
+        return ("POST %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Type: application/json\r\n"
+                "Content-Length: %d\r\nAuthorization: Bearer %s\r\n\r\n"
+                % (path, self.port, length, self.tokens["admin"])).encode("ascii")
+
+    def test_a_slow_upload_that_keeps_coming_is_read_and_answered(self):
+        # SEC2-02: a body that arrives slowly but steadily (here 16 KB every 0.2 s, about
+        # 80 KB/s) is read in full, even when that takes longer than the old allowance of the
+        # socket timeout plus one second per 256 KB (1 s + 1.2 s here).
+        document = a_document(40)
+        document["files"] = [{"rel_path": "f/%05d.txt" % number, "bytes": 1, "sha256": None}
+                             for number in range(6000)]
+        document["sums_sha256"] = None
+        body = json.dumps({"document": document}).encode("utf-8")
+        self.assertGreater(len(body), 300 * 1024)
+        piece = 16 * 1024
+        started = time.monotonic()
+        with socket.create_connection(("127.0.0.1", self.port), timeout=30) as connection:
+            connection.sendall(self.post_head(len(body)))
+            for offset in range(0, len(body), piece):
+                connection.sendall(body[offset:offset + piece])
+                time.sleep(0.2)
+            answer = _read_all(connection)
+        self.assertGreater(time.monotonic() - started, 3)
+        self.assertEqual(raw_status(answer), 200, answer[:300])
+        self.assertEqual(raw_json(answer)["n_files"], 6000)
+
+    def test_a_body_that_comes_too_slowly_gets_408_and_the_log_says_timeout(self):
+        # SEC2-02: when the deadline cuts a body off, the client gets 408 "timeout" (only the
+        # reading side is shut), and the log line says 408 timeout, not 400. Here 12 KB come
+        # in the first 0.4 s and then nothing: less than 16 KB in the first second (the socket
+        # timeout here), so the deadline cuts the body off before any single wait runs out.
+        log_path = self.project.path / "var" / "log" / "server.log"
+        log, handler = server.file_log(log_path)
+        self.addCleanup(handler.close)
+        self.running.app.log = log
+        started = time.monotonic()
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as connection:
+            connection.sendall(self.post_head(100000) + b'{"document": ')
+            for _ in range(3):
+                connection.sendall(b" " * 4096)
+                time.sleep(0.2)
+            answer = _read_all(connection)
+        self.assertLess(time.monotonic() - started, 4.5)
+        self.assertEqual(raw_status(answer), 408, answer[:300])
+        self.assertEqual(raw_json(answer)["error"]["code"], "timeout")
+        handler.flush()
+        text = log_path.read_text(encoding="utf-8")
+        self.assertRegex(text, r"POST /api/v1/registrations 408 admin \d+ms timeout")
+        self.assertNotIn("/api/v1/registrations 400", text)
+        self.assertEqual(http(self.port, "GET", "/api/v1/health", timeout=5).status, 200)
+
+    def test_a_slow_drip_of_the_body_does_not_hold_a_thread(self):
+        # SEC-06 for the body: one byte every 0.3 s keeps every single wait short, but far
+        # less than 16 KB comes in each second (the socket timeout here), so the server lets go.
+        connection = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.addCleanup(connection.close)
+        connection.sendall(self.post_head(16 * 1024 * 1024) + b'{"document": ')
+        started = time.monotonic()
+        answer, closed = b"", False
+        while time.monotonic() - started < 6:
+            try:
+                connection.sendall(b" ")
+            except OSError:
+                closed = True
+                break
+            connection.settimeout(0.3)
+            try:
+                chunk = connection.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                closed = True
+                break
+            if not chunk:
+                closed = True
+                break
+            answer += chunk
+        self.assertTrue(closed or answer, "the server still waited after 6 s")
+        self.assertLess(time.monotonic() - started, 4)
+        if answer:
+            self.assertEqual(raw_status(answer), 408, answer[:300])
         self.assertEqual(http(self.port, "GET", "/api/v1/health", timeout=5).status, 200)
 
 
@@ -1227,7 +1327,7 @@ class TestServe(support.SqliteCase, unittest.TestCase):
     def test_the_cluster_it_started_is_stopped(self):
         FakeCluster.running_before = False
         with mock.patch("pcldb.store.pgcluster.LocalCluster", FakeCluster), \
-                mock.patch("pcldb.store.postgres_engine.load_psycopg", lambda: None):
+                mock.patch("pcldb.store.postgres_engine.load_psycopg", lambda settings=None: None):
             text = self.run_serve(self._postgres_settings(), self.store)
         self.assertEqual(FakeCluster.made[0].calls, ["ensure_running", "stop"])
         self.assertIn("Stopped the local PostgreSQL database", text)
@@ -1235,7 +1335,7 @@ class TestServe(support.SqliteCase, unittest.TestCase):
     def test_a_cluster_that_was_running_keeps_running(self):
         FakeCluster.running_before = True
         with mock.patch("pcldb.store.pgcluster.LocalCluster", FakeCluster), \
-                mock.patch("pcldb.store.postgres_engine.load_psycopg", lambda: None):
+                mock.patch("pcldb.store.postgres_engine.load_psycopg", lambda settings=None: None):
             text = self.run_serve(self._postgres_settings(), self.store)
         self.assertEqual(FakeCluster.made[0].calls, ["ensure_running"])
         self.assertNotIn("Stopped the local PostgreSQL database", text)
@@ -1260,6 +1360,43 @@ class TestServe(support.SqliteCase, unittest.TestCase):
         again = server.ServeLock(self.settings)
         again.acquire(1)           # and serve let go of it at the end
         again.release()
+
+    def test_a_folder_that_cannot_be_locked_is_not_called_already_serving(self):
+        # SEC2-06: only "held by another process" means another serve. A folder whose file
+        # system has no locks (ENOTSUP, for example a network folder) gets a note that names
+        # the real error, and serve runs without the check.
+        import errno
+
+        def unsupported(_self, _handle):
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+        with mock.patch.object(server.ServeLock, "_lock", unsupported):
+            lock = server.ServeLock(self.settings)
+            lock.acquire(18556)
+            try:
+                self.assertFalse(lock.locked)
+                self.assertIn("cannot be locked (Operation not supported)", lock.note)
+                self.assertIn(str(self.settings.var_dir / server.SERVE_LOCK_FILE), lock.note)
+                self.assertNotIn("running already", lock.note)
+            finally:
+                lock.release()
+            self.assertFalse((self.settings.var_dir / server.SERVE_INFO_FILE).exists())
+            text = self.run_serve(self.settings, self.store)
+        self.assertIn("is not available here", text)
+        self.assertIn("Stopping the website.", text)
+        # A lock that another process holds is still "running already", whatever the system
+        # says it with.
+        held = [errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES]
+        if os.name == "nt":
+            held.append(getattr(errno, "EDEADLOCK", 36))
+        for number in held:
+            def busy(_self, _handle, number=number):
+                raise OSError(number, os.strerror(number))
+
+            with mock.patch.object(server.ServeLock, "_lock", busy):
+                with self.assertRaises(server.PclError) as caught:
+                    server.ServeLock(self.settings).acquire(18557)
+            self.assertEqual(caught.exception.code, "already_serving", number)
 
     def test_a_port_in_use_is_a_plain_sentence(self):
         with socket.socket() as taken:

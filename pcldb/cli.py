@@ -537,7 +537,7 @@ def _check_before_first_setup(settings, engine, port):
         return
     from . import util
     from .store import pgcluster, postgres_engine
-    postgres_engine.load_psycopg()
+    postgres_engine.load_psycopg(settings)  # the project's own settings file decides
     pgcluster.choose_pg_bin(candidate)
     cluster = pgcluster.LocalCluster(candidate)
     if not cluster.is_initialized() and util.port_in_use(cluster.port):
@@ -569,9 +569,11 @@ def _settings_for_setup(args, settings):
         else:
             other = "sqlite" if engine == "postgresql" else "postgresql"
             _say("Engine: %s, as that file says (without --engine, setup keeps the engine of a "
-                 "settings file that exists). To switch to %s: pcldb dump FILE, change "
-                 "\"database.engine\" in that file to \"%s\", pcldb setup, then pcldb restore "
-                 "FILE --include-users." % (_engine_word(engine), _engine_word(other), other))
+                 "settings file that exists). To switch to %s: %s dump FILE, change "
+                 "\"database.engine\" in that file to \"%s\", %s setup, then %s restore "
+                 "FILE --include-users." % (_engine_word(engine), _engine_word(other),
+                                            util.LAUNCHER, other, util.LAUNCHER,
+                                            util.LAUNCHER))
     else:
         engine, sentences = choose_engine(settings, wanted_engine)
         _check_before_first_setup(settings, engine, wanted_port)
@@ -594,9 +596,11 @@ def _settings_for_setup(args, settings):
     if wanted_engine and wanted_engine != engine:
         raise PclError(
             "--engine says %s, but %s says %s. pcldb setup never changes a settings file that "
-            "exists. To switch: change \"database.engine\" in that file to \"%s\" and run pcldb "
-            "setup again. (To carry the records over: pcldb dump FILE before, pcldb restore "
-            "FILE after.)" % (wanted_engine, path, engine, wanted_engine), code="engine_conflict")
+            "exists. To switch: change \"database.engine\" in that file to \"%s\" and run %s "
+            "setup again. (To carry the records over: %s dump FILE before, %s restore "
+            "FILE --include-users after.)" % (wanted_engine, path, engine, wanted_engine,
+                                              util.LAUNCHER, util.LAUNCHER, util.LAUNCHER),
+            code="engine_conflict")
     if wanted_port is not None and wanted_port != settings.database.postgresql.port:
         raise PclError(
             "--port says %d, but %s says %d for the local PostgreSQL database. pcldb setup "
@@ -683,7 +687,7 @@ def _load_demo(store, settings):
 def _prepare_local_cluster(settings):
     """Create and start the local PostgreSQL cluster; say what happened."""
     from .store import pgcluster, postgres_engine
-    postgres_engine.load_psycopg()      # fail before anything is created when it is missing
+    postgres_engine.load_psycopg(settings)  # fail before anything is created when it is missing
     cluster = pgcluster.LocalCluster(settings)
     created = cluster.init()
     for notice in cluster.notices:
@@ -854,7 +858,7 @@ def _db_reset(settings, yes):
     store = open_store(settings)
     if _is_local_postgres(settings):
         from .store import pgcluster, postgres_engine
-        postgres_engine.load_psycopg()
+        postgres_engine.load_psycopg(settings)
         pgcluster.choose_pg_bin(settings)       # fail now, not after the data is gone
         cluster = pgcluster.LocalCluster(settings)
         cluster.destroy()

@@ -70,6 +70,31 @@ def remove_tree(path):
         shutil.rmtree(path, onerror=retry_writable)
 
 
+def make_temp_folder(prefix, windows=None):
+    """A new, empty temporary folder whose name starts with `prefix`; its path as text.
+
+    On Windows the folder is made without a mode (os.mkdir(path)), so it inherits the rights of
+    the temporary folder. tempfile.mkdtemp gives it mode 0o700, which Python 3.13 and newer turn
+    into rights for SYSTEM, Administrators and the owner only; PostgreSQL's programs run with
+    reduced rights on Windows and then cannot open anything in it (initdb: Permission denied).
+    Use this for every folder that may hold a PostgreSQL cluster. `windows` is for the tests.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return tempfile.mkdtemp(prefix=prefix)
+    base = os.path.abspath(tempfile.gettempdir())
+    for _attempt in range(100):
+        path = os.path.join(base, prefix + secrets.token_hex(4))
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            continue
+        return path
+    raise FileExistsError("no unused temporary folder name starting with %r in %s"
+                          % (prefix, base))
+
+
 _open_projects = set()
 
 
@@ -97,7 +122,7 @@ class TempProject:
     """
 
     def __init__(self, engine="sqlite", changes=None, prefix="pcldb test "):
-        self.path = Path(tempfile.mkdtemp(prefix=prefix))
+        self.path = Path(make_temp_folder(prefix))
         _open_projects.add(self.path)
         try:
             self.settings = Settings.for_test(self.path, engine=engine, changes=changes)
@@ -165,7 +190,7 @@ class _SharedCluster:
     def __init__(self):
         from pcldb.store import pgcluster
         from pcldb.store.postgres_engine import PostgresStore
-        self.root = Path(tempfile.mkdtemp(prefix="pcldb pg "))
+        self.root = Path(make_temp_folder("pcldb pg "))
         self.closed = False
         try:
             self.settings = Settings.for_test(self.root, engine="postgresql")

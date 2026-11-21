@@ -20,7 +20,10 @@ A person types the SQL, so it is hostile until proven otherwise. What it meets, 
    sub-query. Such a column-less read is allowed unless the name is one of SQLite's built-in
    table modules, a `pragma_*` table or a `sqlite_*` table.
 3. Limits on the connection: values of at most 10 MB, a short LIKE pattern, shallow expressions,
-   and a cap on the memory SQLite itself may take (see MEMORY_LIMIT_BYTES).
+   and a cap on the memory SQLite itself may take (see MEMORY_LIMIT_BYTES). Before SQLite
+   reads the text: at most READER_SQL_CHARS characters, brackets at most BRACKET_DEPTH deep
+   and at most SELECT_PARTS SELECT key words; the statement then runs in a thread with
+   WORKER_STACK_BYTES of stack.
 4. The driver takes one statement per call ("You can only execute one statement at a time").
 5. A time limit: a progress handler stops the statement at the deadline, and a watchdog thread
    calls `interrupt()` shortly after as a second line.
@@ -69,8 +72,26 @@ EXPRESSION_DEPTH = 500                  # deep expressions use the thread's stac
 # stops at "parser stack overflow" (measured on 3.45: 94 plain brackets, 16 nested sub-queries);
 # from 3.46 its parser grows on the heap, and a few thousand nested sub-queries then use up a
 # small thread stack inside SQLite (the process dies). With this check deep nesting is refused
-# the same way on every SQLite version, and a request thread stays safe.
+# the same way on every SQLite version.
 BRACKET_DEPTH = 100
+# Sub-queries also nest without brackets: a chain of WITH parts, each reading the one before,
+# is expanded by SQLite one inside the other. So the number of SELECT key words (outside
+# strings and comments) is capped too. Measured in a thread with a 256 KB stack: 700 such
+# parts end the process on 3.45 and 3.50; 600 run on 3.45.
+SELECT_PARTS = 200
+# SQLite checks the depth of an expression only after it has walked it, and that walk follows
+# the sub-queries in it into the WITH parts they read. A chain of parts that each put operators
+# on the column of the one before (a_i AS (SELECT ~~~...~x x FROM a_i-1)) becomes ONE expression
+# as deep as all their operators together: the limits above let 199 parts of 495 '~' through.
+# Measured on 3.50 (macOS, arm64): 32 MB of stack holds about 72,000 such levels (145 x 495
+# ran, 150 x 495 ended the process); 3.45 stops these chains in its parser. Every operator is
+# at least one character, so the depth is never more than the length of the text. So every
+# statement runs in a thread of its own with this much stack, whatever stack the calling thread
+# has (a web request's thread, the command line's main thread, a test's small one), and the
+# text may be at most READER_SQL_CHARS long, whatever sql.max_sql_chars says (more than twice
+# below what the stack holds).
+WORKER_STACK_BYTES = 32 * 1024 * 1024
+READER_SQL_CHARS = 30000
 COMPOUND_SELECT_TERMS = 100
 FUNCTION_ARGUMENTS = 100
 PROGRAM_STEPS = 2000000                 # size of one compiled statement
@@ -144,7 +165,23 @@ _PRIVATE_NAME = re.compile(r"^no such (?:table|view): app\.", re.IGNORECASE)
 def bracket_depth(sql):
     """How deeply round brackets nest in `sql`, not counting brackets inside '...', "...",
     `...`, [...] or comments."""
-    depth = deepest = 0
+    return _measure(sql)[0]
+
+
+def select_parts(sql):
+    """How many SELECT key words `sql` holds, not counting those inside '...', "...", `...`,
+    [...] or comments."""
+    return _measure(sql)[1]
+
+
+def _word_char(char):
+    return char.isalnum() or char in "_$" or ord(char) >= 0x80
+
+
+def _measure(sql):
+    """(deepest nesting of round brackets, number of SELECT key words) in `sql`, outside
+    strings, quoted names and comments."""
+    depth = deepest = selects = 0
     index, size = 0, len(sql)
     while index < size:
         char = sql[index]
@@ -166,13 +203,21 @@ def bracket_depth(sql):
                 break
             index = end + 2
             continue
+        if _word_char(char):
+            end = index + 1
+            while end < size and _word_char(sql[end]):
+                end += 1
+            if end - index == 6 and sql[index:end].lower() == "select":
+                selects += 1
+            index = end
+            continue
         if char == "(":
             depth += 1
             deepest = max(deepest, depth)
         elif char == ")" and depth:
             depth -= 1
         index += 1
-    return deepest
+    return deepest, selects
 
 _memory_lock = threading.Lock()
 _memory_capped = False
@@ -430,17 +475,32 @@ class SqliteReader:
         self._used = True
         if not isinstance(sql, str):
             raise sqlrun.refused("The SQL must be text.")
-        depth = bracket_depth(sql)
+        if len(sql) > READER_SQL_CHARS:
+            raise sqlrun.refused("This SQL is %d characters long; expert mode on SQLite takes at "
+                                 "most %d. Make it shorter." % (len(sql), READER_SQL_CHARS),
+                                 {"reader_sql_chars": READER_SQL_CHARS})
+        depth, selects = _measure(sql)
         if depth > BRACKET_DEPTH:
             raise sqlrun.refused("This SQL nests brackets %d deep; expert mode allows at most %d. "
-                                 "Write it with fewer levels (a WITH part can help)."
-                                 % (depth, BRACKET_DEPTH))
+                                 "Write it with fewer levels." % (depth, BRACKET_DEPTH))
+        if selects > SELECT_PARTS:
+            raise sqlrun.refused("This SQL has %d SELECT parts; expert mode allows at most %d. "
+                                 "Write it with fewer sub-queries and WITH parts."
+                                 % (selects, SELECT_PARTS))
         if isinstance(max_rows, bool) or not isinstance(max_rows, int) or max_rows < 1:
             raise ValueError("max_rows must be a whole number of at least 1")
         timeout_seconds = float(timeout_seconds)
         if not timeout_seconds > 0:
             raise ValueError("timeout_seconds must be more than 0")
+        # The thread closes the connection when the statement ends. Should the wait for it be
+        # cut short (Ctrl+C on the command line), the statement is interrupted first.
+        return _on_own_stack(self._watchdog, self._execute, sql, max_rows, timeout_seconds)
+
+    def _execute(self, sql, max_rows, timeout_seconds):
+        """The body of `run`, in the thread with a known stack (see WORKER_STACK_BYTES)."""
         connection = self._connection
+        if connection is None:
+            raise RuntimeError("a reader runs one statement; open a new one with store.reader()")
         self._temp_folder = temp_folder()
         self._free_at_start = _free_bytes(self._temp_folder)
         self._next_disk_check = time.monotonic() + DISK_CHECK_SECONDS
@@ -564,6 +624,51 @@ class SqliteReader:
     def __exit__(self, kind, value, trace):
         self.close()
         return False
+
+
+_stack_lock = threading.Lock()
+
+
+def _on_own_stack(stop, function, *arguments):
+    """function(*arguments) in a new thread with WORKER_STACK_BYTES of stack; its result, or
+    its exception raised here. stop() is called when the wait for it is cut short. Where the
+    stack size cannot be chosen the thread has the default one; where no thread can be made
+    at all, the function runs right here."""
+    box = {}
+
+    def work():
+        try:
+            box["result"] = function(*arguments)
+        except BaseException as error:      # handed to the caller below
+            box["error"] = error
+
+    with _stack_lock:                       # threading.stack_size is one value per process
+        try:
+            previous = threading.stack_size(WORKER_STACK_BYTES)
+        except (ValueError, RuntimeError):
+            previous = None
+        try:
+            worker = threading.Thread(target=work, name="pcldb-sql", daemon=True)
+            worker.start()
+        except RuntimeError:                # no new thread can be made at this moment
+            worker = None
+        finally:
+            if previous is not None:
+                threading.stack_size(previous)
+    if worker is None:
+        return function(*arguments)
+    try:
+        worker.join()
+    except BaseException:
+        stop()
+        raise
+    if "error" in box:
+        error = box.pop("error")
+        try:
+            raise error
+        finally:
+            del error
+    return box["result"]
 
 
 def _is_busy(error):

@@ -74,6 +74,9 @@ What each step does:
 `./pcldb.sh doctor` checks everything and prints one line per check (OK or PROBLEM, and the
 fix). `./pcldb.sh --help` lists every command; `./pcldb.sh setup --help` explains one.
 
+Messages, and the rest of this README, write a command as `pcldb <command>`: type
+`./pcldb.sh <command>` on a Mac or Linux, and `.\pcldb.cmd <command>` on Windows.
+
 SQLite needs nothing installed. For PostgreSQL instead, install it once and leave out
 `--engine`, in a folder that has no `pcldb_config.json` yet (a folder that was set up keeps its
 engine; to change it see "To switch engines" below):
@@ -171,14 +174,17 @@ Then change `"engine"` in the group `"database"` of `pcldb_config.json` to `"pos
 
 ```sh
 ./pcldb.sh setup
-./pcldb.sh restore pcl_dump.jsonl
+./pcldb.sh restore pcl_dump.jsonl --include-users
 ```
 
 `restore` only loads into an empty database, and leaves users and tokens out unless you add
-`--include-users`: then the dump's users and tokens replace the admin that `setup` made (that
-admin's token file, `var/admin_token.txt`, is removed; the dump's tokens work again). The variable `PCLDB_ENGINE` overrides
-the settings file. `pcldb setup` never edits a settings file that exists; it says so when
-`--engine` disagrees with the file.
+`--include-users`: then the dump's users and tokens replace the admin that `setup` made. That
+`setup` wrote its own admin's token over `var/admin_token.txt`, so the old admin token is no
+longer in any file: when the dump has the user `admin`, `restore` gives it a new token and saves
+it in `var/admin_token.txt`, and says so. Other tokens of the dump (those under `var/tokens/`
+and those handed out) work again. Without `--include-users` the admin that `setup` made stays,
+with its token file. The variable `PCLDB_ENGINE` overrides the settings file. `pcldb setup`
+never edits a settings file that exists; it says so when `--engine` disagrees with the file.
 
 **One SQLite file of the catalogue, from either engine:**
 

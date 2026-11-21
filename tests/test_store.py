@@ -1214,7 +1214,7 @@ class TestSqliteOnly(support.SqliteCase, unittest.TestCase):
         self.assertEqual(lines[1], "{'labels': ['a'], 'last_run_utc': '2026-11-17T03:50:15.000Z'}")
         self.assertEqual(lines[2], "sqlite True")
         self.assertTrue(lines[3].startswith("postgresql: psycopg_missing |"), lines[3])
-        self.assertIn("pcldb setup --engine sqlite", lines[3])
+        self.assertIn("%s setup --engine sqlite" % util.LAUNCHER, lines[3])
         self.assertEqual(lines[4], "loaded: []")
         self.assertEqual(result.stderr, "")
 

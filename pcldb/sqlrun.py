@@ -69,6 +69,10 @@ _EXACT_INT = 2 ** 53
 _CUT_MARK = "... [cut: %d characters in all]"
 _CUT_MARK_BYTES = "... [cut: %d bytes in all]"
 _CUT_MARK_LONGER = "... [cut: the value is longer]"
+# Lists and documents deeper than this are not followed further: the same answer on every
+# Python (3.11 runs out of stack far earlier than 3.12 and newer).
+_MAX_DEPTH = 200
+_TOO_DEEP = "[nested too deeply to show]"
 
 
 class CutText(str):
@@ -221,8 +225,9 @@ def _cut(text, limit):
     return _sound(text[:limit]) + _CUT_MARK % len(text)
 
 
-def _nested(value):
-    """A value inside a list or a JSON document, made JSON-safe (no cutting at this level)."""
+def _nested(value, depth=1):
+    """A value inside a list or a JSON document, made JSON-safe (no cutting at this level).
+    A list or document more than _MAX_DEPTH levels deep becomes the text _TOO_DEEP there."""
     if value is None or value is True or value is False:
         return value
     kind = type(value)
@@ -232,12 +237,22 @@ def _nested(value):
         return value if -_EXACT_INT <= value <= _EXACT_INT else str(value)
     if kind is float:
         return value if math.isfinite(value) else _float_word(value)
+    if isinstance(value, (dict, list, tuple)) and depth > _MAX_DEPTH:
+        return _TOO_DEEP
     if isinstance(value, dict):
-        return {_sound(key if isinstance(key, str) else str(key)): _nested(item)
-                for key, item in value.items()}
+        return {_sound(key if isinstance(key, str) else _plain_text(key)):
+                _nested(item, depth + 1) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_nested(item) for item in value]
+        return [_nested(item, depth + 1) for item in value]
     return _scalar_text(value)
+
+
+def _plain_text(value):
+    """str(value), or <its kind> when that fails (also a structure too deep for str())."""
+    try:
+        return str(value)
+    except Exception:                   # RecursionError is one
+        return "<%s>" % type(value).__name__
 
 
 def _float_word(value):
@@ -275,7 +290,8 @@ def json_value(value, max_cell_chars):
     becomes text (a browser would lose digits). NaN and the infinities become the texts "NaN",
     "Infinity", "-Infinity". Decimal numbers become text (no digit is lost). Dates and times
     become ISO text. Bytes become `\\x` and hex digits. Lists stay lists, JSON documents stay
-    as they are (with the same rules for what they hold). Anything else becomes its text.
+    as they are (with the same rules for what they hold); past 200 levels of nesting the note
+    "[nested too deeply to show]" stands in for the rest. Anything else becomes its text.
     A text cell longer than `max_cell_chars` is cut and marked; a list or document whose JSON
     text would be longer than that becomes that cut text. Half surrogate pairs (they cannot be
     sent as UTF-8) become question marks.
@@ -300,7 +316,7 @@ def json_value(value, max_cell_chars):
             clean = _nested(value)
             text = json.dumps(clean, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         except (RecursionError, ValueError, TypeError):
-            return _cut(str(value), max_cell_chars)
+            return _cut(_plain_text(value), max_cell_chars)
         if len(text) > max_cell_chars:
             return _cut(text, max_cell_chars)
         return clean

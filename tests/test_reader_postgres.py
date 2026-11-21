@@ -315,6 +315,15 @@ HOSTILE = [
     ("SELECT txid_current() > 0", OK, "what stays possible: one transaction id per query"),
 ]
 
+# Statements that make the server build a value of hundreds of megabytes. On a slow machine
+# (the Windows runner of the GitHub checks) that takes longer than TIMEOUT, so they get a longer
+# limit: what they prove is their outcome (the cell is cut, nothing private comes back,
+# nothing changes), not the speed of the machine. The hard stop still bounds them.
+SLOW = {
+    "SELECT repeat('x', 300000000)": 30.0,
+    "SELECT length(repeat('x', 200000000))": 30.0,
+}
+
 
 def _owner(store):
     import psycopg
@@ -427,22 +436,24 @@ class TestHostileStatements(ReaderBase, unittest.TestCase):
     def test_the_list_is_long_enough(self):
         self.assertGreaterEqual(len(HOSTILE), 40)
         self.assertEqual(len({sql for sql, _outcome, _layer in HOSTILE}), len(HOSTILE))
+        self.assertLessEqual(set(SLOW), {sql for sql, _outcome, _layer in HOSTILE})
 
     def test_every_statement_has_its_outcome_and_nothing_changes(self):
         before = self.dump()
         files_before = self.project_files()
         wrong = []
         for sql, expected, layer in HOSTILE:
+            limit = SLOW.get(sql, TIMEOUT)
             sql = sql.replace("{dir}", str(self.project.path))
             started = time.monotonic()
-            outcome, text = self.attempt(sql)
+            outcome, text = self.attempt(sql, timeout=limit)
             elapsed = time.monotonic() - started
             accepted = expected if isinstance(expected, tuple) else (expected,)
             if outcome not in accepted:
                 wrong.append("%s\n    expected %s (%s), got %s: %s"
                              % (sql[:120], expected, layer, outcome, text[:240]))
             self.assertNotIn(MARKER, text, "a private value came back for: " + sql[:120])
-            self.assertLess(elapsed, TIMEOUT + reader_postgres.HARD_STOP_SECONDS,
+            self.assertLess(elapsed, limit + reader_postgres.HARD_STOP_SECONDS,
                             "took too long: " + sql[:120])
         self.assertEqual(wrong, [], "\n".join(wrong))
         wait_until_no_reader(self, self.store)
@@ -705,6 +716,217 @@ class TestStatementEnd(unittest.TestCase):
                 ("", "", False)):
             end, found_more = reader_postgres.statement_end(sql)
             self.assertEqual((sql[:end], found_more), (body, more), sql)
+
+
+# What a server whose lc_messages is German says (PostgreSQL's own translations).
+_GERMAN_BIND = ("Binden-Nachricht enthält 0 Parameter, aber vorbereitete Anweisung »« "
+                "erfordert 1")
+_GERMAN_SCHEMA = "keine Berechtigung für Schema app"
+
+
+class _Diag:
+    def __init__(self, primary, severity="ERROR", schema_name=None):
+        self.message_primary = primary
+        self.severity_nonlocalized = severity
+        self.schema_name = schema_name
+        self.statement_position = None
+        self.message_hint = None
+
+
+class _Error(Exception):
+    def __init__(self, code, primary, **diag):
+        super().__init__(primary)
+        self.sqlstate = code
+        self.diag = _Diag(primary, **diag)
+
+
+class _Connection:
+    def __init__(self, broken=False):
+        self.closed = broken
+        self.broken = broken
+
+
+class TestErrorsInAnyLanguage(unittest.TestCase):
+    """SEC2-04: a lab server may write its messages in another language (lc_messages, which a
+    reader cannot change). The answers to a parameter mark and to the private schema rest on
+    what does not depend on it: the error code, the state of the session, the diagnostic
+    fields and the SQL text."""
+
+    def setUp(self):
+        try:
+            import psycopg  # noqa: F401
+        except ImportError:
+            self.skipTest("the Python package psycopg is not installed")
+
+    def translate(self, error, sql, connection=None):
+        reader = reader_postgres.PostgresReader(None)
+        reader._connection = connection if connection is not None else _Connection()
+        return reader._translate(error, sql, TIMEOUT, {"prefix": None})
+
+    def test_a_parameter_mark_in_another_language(self):
+        for sql in ("SELECT $1", "EXPLAIN SELECT $1",
+                    "SELECT path FROM sessions WHERE instrument = $1"):
+            result = self.translate(_Error("08P01", _GERMAN_BIND), sql)
+            self.assertEqual((result.code, result.message),
+                             ("sql_refused", sqlrun.PARAMETER_MARK), sql)
+        # The session is alive: the mark is the cause, even where the text hides it from
+        # this module's reading of it.
+        result = self.translate(_Error("08P01", _GERMAN_BIND), "SELECT 1")
+        self.assertEqual(result.code, "sql_refused")
+        # The text holds a mark: the cause, even when the session state is not known.
+        result = self.translate(_Error("08P01", _GERMAN_BIND), "SELECT $1",
+                                _Connection(broken=True))
+        self.assertEqual(result.code, "sql_refused")
+        # A real loss of the connection still says so.
+        result = self.translate(_Error("08P01", "Verbindung verloren", severity="FATAL"),
+                                "SELECT 1", _Connection(broken=True))
+        self.assertEqual(result.code, "db_down")
+        result = self.translate(_Error("08006", "Verbindung verloren"), "SELECT $1")
+        self.assertEqual(result.code, "db_down")
+
+    def test_the_private_schema_in_another_language(self):
+        for sql in ("SELECT * FROM app.users", "TABLE APP . tokens",
+                    "SELECT display_name FROM \"app\".\"users\"",
+                    "SELECT 'app.users'::regclass",
+                    "SELECT has_table_privilege('app.users', 'SELECT')"):
+            result = self.translate(_Error("42501", _GERMAN_SCHEMA), sql)
+            self.assertEqual((result.code, result.message),
+                             ("sql_refused", sqlrun.PRIVATE_PART), sql)
+        # The diagnostic field alone is enough.
+        result = self.translate(_Error("42501", "keine Berechtigung", schema_name="app"),
+                                "SELECT 1")
+        self.assertEqual(result.message, sqlrun.PRIVATE_PART)
+        # Another missing right keeps its own sentence.
+        result = self.translate(_Error("42501", "keine Berechtigung für Funktion pg_sleep"),
+                                "SELECT pg_sleep(60)")
+        self.assertEqual(result.code, "sql_refused")
+        self.assertNotEqual(result.message, sqlrun.PRIVATE_PART)
+        self.assertIn("pg_sleep", result.message)
+        # SEC2-04, second round: a table's other name "app" is not the private schema.
+        for sql in ("SELECT app.path, pg_read_file('/etc/passwd') FROM sessions app",
+                    "WITH app AS (SELECT 1 AS x) SELECT app.x, pg_read_file('x') FROM app"):
+            result = self.translate(
+                _Error("42501", "permission denied for function pg_read_file"), sql)
+            self.assertEqual(result.code, "sql_refused", sql)
+            self.assertNotEqual(result.message, sqlrun.PRIVATE_PART, sql)
+            self.assertIn("pg_read_file", result.message, sql)
+
+    def test_the_other_refusals_in_another_language(self):
+        # docs/SECURITY.md, second round: these were decided by English words of the message.
+        one_statement = "Expert mode runs one statement at a time."
+        for code, primary, sql, start in (
+                ("42601", "kann nicht mehrere Befehle in vorbereitete Anweisung einfügen",
+                 "SELECT 1; DELETE FROM sessions", one_statement),
+                ("42601", "kann nicht mehrere Befehle in vorbereitete Anweisung einfügen",
+                 "SELECT ';' ; SELECT 2", one_statement),
+                ("42601", "SELECT ... INTO ist hier nicht erlaubt",
+                 "SELECT * INTO newtable FROM sessions", "Expert mode only reads"),
+                ("0A000", "DECLARE CURSOR darf keine datenverändernden Anweisungen in WITH "
+                 "enthalten", "WITH d AS (DELETE FROM sessions RETURNING 1) SELECT * FROM d",
+                 "Expert mode only reads")):
+            result = self.translate(_Error(code, primary), sql)
+            self.assertEqual(result.code, "sql_refused", sql)
+            self.assertTrue(result.message.startswith(start), (sql, result.message))
+        # A typing mistake stays the server's own complaint.
+        result = self.translate(_Error("42601", "Syntaxfehler bei »FORM«"),
+                                "SELECT 'into; x' FORM sessions")
+        self.assertEqual(result.code, "sql_error")
+        # A cancel at the time limit is a timeout; one long before it is someone else's.
+        cancelled = _Error("57014", "storniere Anfrage wegen Zeitüberschreitung der Anweisung")
+        reader = reader_postgres.PostgresReader(None)
+        reader._connection = _Connection()
+        late = {"prefix": None, "started": time.monotonic() - TIMEOUT - 0.5}
+        self.assertEqual(reader._translate(cancelled, "SELECT 1", TIMEOUT, late).code,
+                         "sql_timeout")
+        early = {"prefix": None, "started": time.monotonic()}
+        self.assertEqual(reader._translate(cancelled, "SELECT 1", TIMEOUT, early).message,
+                         "The query was cancelled.")
+
+    def test_reading_the_text(self):
+        for sql, mark in (("SELECT $1", True), ("select 1$1", True), ("SELECT ($12)", True),
+                          ("SELECT '$1'", False), ("SELECT $$ $1 $$", False),
+                          ("SELECT $t$ $1 $t$", False), ("SELECT 1 -- $1", False),
+                          ("SELECT /* /* $1 */ $1 */ 1", False), ("SELECT \"$1\"", False),
+                          ("SELECT a$1 FROM t", False), ("SELECT E'\\'$1'", False),
+                          ("SELECT '\\'$1", True), ("SELECT $", False), ("", False)):
+            self.assertEqual(reader_postgres.has_parameter_mark(sql), mark, sql)
+        for sql, into in (("SELECT * INTO t FROM s", True), ("select * into t from s", True),
+                          ("SELECT/**/*/**/INTO t FROM s", True),
+                          ("SELECT 'into' FROM s", False), ("SELECT 1 -- into", False),
+                          ("SELECT \"into\" FROM s", False), ("SELECT intox FROM s", False),
+                          ("SELECT $$ into $$", False), ("", False)):
+            self.assertEqual(reader_postgres.has_key_word(sql, "into"), into, sql)
+
+
+class TestServerInAnotherLanguage(ReaderBase, unittest.TestCase):
+    """SEC2-04 against a real server: the test database gets German messages (where this
+    PostgreSQL and this system have them) and the answers stay the same."""
+
+    _LOCALES = ("de_DE.UTF-8", "de_DE.utf8", "de_DE", "German_Germany.1252", "de-DE")
+
+    def setUp(self):
+        super().setUp()
+        owner = self.owner()
+        database = owner.execute("SELECT current_database()").fetchone()[0]
+        from psycopg import errors, sql as pgsql
+        for name in self._LOCALES:
+            try:
+                owner.execute(pgsql.SQL("ALTER DATABASE {} SET lc_messages = {}").format(
+                    pgsql.Identifier(database), pgsql.Literal(name)))
+                break
+            except errors.Error:
+                continue
+        else:
+            self.skipTest("this system has no German locale for PostgreSQL's messages")
+        self.addCleanup(lambda: self.owner().execute(pgsql.SQL(
+            "ALTER DATABASE {} RESET lc_messages").format(pgsql.Identifier(database))))
+        outcome, text = self.attempt("SELECT 1 / 0")
+        if "division by zero" in text:
+            self.skipTest("this PostgreSQL has no German messages (built without NLS)")
+
+    def test_the_same_answers_in_german(self):
+        for sql in ("SELECT $1", "EXPLAIN SELECT $1",
+                    "SELECT path FROM sessions WHERE instrument = $1"):
+            with self.assertRaises(PclError) as caught:
+                self.read(sql, timeout_seconds=TIMEOUT)
+            self.assertEqual((caught.exception.code, caught.exception.message),
+                             ("sql_refused", sqlrun.PARAMETER_MARK), sql)
+        for sql in ("SELECT * FROM app.users", "TABLE app.tokens",
+                    "SELECT display_name FROM \"app\".\"users\"",
+                    "EXPLAIN SELECT * FROM app.users", "SELECT 'app.users'::regclass"):
+            with self.assertRaises(PclError) as caught:
+                self.read(sql, timeout_seconds=TIMEOUT)
+            self.assertEqual((caught.exception.code, caught.exception.message),
+                             ("sql_refused", sqlrun.PRIVATE_PART), sql)
+        for sql, start in (("SELECT 1; DELETE FROM sessions",
+                            "Expert mode runs one statement at a time."),
+                           ("SELECT * INTO newtable FROM sessions", "Expert mode only reads"),
+                           ("WITH d AS (DELETE FROM sessions RETURNING 1) SELECT * FROM d",
+                            "Expert mode only reads")):
+            with self.assertRaises(PclError) as caught:
+                self.read(sql, timeout_seconds=TIMEOUT)
+            self.assertEqual(caught.exception.code, "sql_refused", sql)
+            self.assertTrue(caught.exception.message.startswith(start),
+                            (sql, caught.exception.message))
+        assert_another_right(self, self.read)
+        self.assertEqual(self.read("SELECT count(*) FROM sessions")[1], [(2,)])
+
+
+def assert_another_right(case, read):
+    """SEC2-04, second round: a table or WITH part called "app" is not the private schema; a
+    function the reader may not call keeps its own sentence."""
+    for sql in ("SELECT app.path, pg_read_file('/etc/passwd') FROM sessions app",
+                "WITH app AS (SELECT 1 AS x) SELECT app.x, pg_ls_dir('.') FROM app"):
+        with case.assertRaises(PclError) as caught:
+            read(sql, timeout_seconds=TIMEOUT)
+        case.assertEqual(caught.exception.code, "sql_refused", sql)
+        case.assertNotEqual(caught.exception.message, sqlrun.PRIVATE_PART, sql)
+        case.assertRegex(caught.exception.message, "pg_read_file|pg_ls_dir")
+
+
+class TestAnotherRightOnAnEnglishServer(ReaderBase, unittest.TestCase):
+    def test_a_table_called_app_is_not_the_private_schema(self):
+        assert_another_right(self, self.read)
 
 
 class TestDeadline(ReaderBase, unittest.TestCase):

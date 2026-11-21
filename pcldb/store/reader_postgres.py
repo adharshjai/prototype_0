@@ -46,6 +46,7 @@ import decimal
 import json
 import re
 import threading
+import time
 
 from .. import sqlrun
 from ..errors import PclError, Unavailable
@@ -181,6 +182,115 @@ def statement_end(sql):
     return (length if end is None else end), more
 
 
+def _code_tokens(sql):
+    """The parts of `sql` that are code, in order: ("word", text) for a name or key word as
+    typed, ("name", text) for a quoted name, ("param", "$1") for a parameter mark, ("mark", c)
+    for any other character. Strings, dollar-quoted texts, comments and spaces are left out.
+    The rules are statement_end's."""
+    position, length = 0, len(sql)
+    while position < length:
+        char = sql[position]
+        if char == "'":
+            escapes = (position > 0 and sql[position - 1] in "eE"
+                       and (position < 2 or not _word_char(sql[position - 2])))
+            position += 1
+            while position < length:
+                if escapes and sql[position] == "\\":
+                    position += 2
+                elif sql[position] == "'":
+                    if sql.startswith("''", position):
+                        position += 2
+                    else:
+                        break
+                else:
+                    position += 1
+            position += 1
+        elif char == '"':
+            close = position + 1
+            while True:
+                close = sql.find('"', close)
+                if close < 0 or not sql.startswith('""', close):
+                    break
+                close += 2
+            end = length if close < 0 else close
+            yield "name", sql[position + 1:end].replace('""', '"')
+            position = end + 1
+        elif sql.startswith("--", position):
+            while position < length and sql[position] not in "\n\r":
+                position += 1
+        elif sql.startswith("/*", position):
+            depth = 1
+            position += 2
+            while position < length and depth:
+                if sql.startswith("*/", position):
+                    depth -= 1
+                    position += 2
+                elif sql.startswith("/*", position):
+                    depth += 1
+                    position += 2
+                else:
+                    position += 1
+        elif char == "$":
+            match = _DOLLAR.match(sql, position)
+            if match is not None:
+                close = sql.find(match.group(), match.end())
+                position = length if close < 0 else close + len(match.group())
+                continue
+            end = position + 1
+            while end < length and sql[end].isdigit():
+                end += 1
+            yield ("param", sql[position:end]) if end > position + 1 else ("mark", char)
+            position = end
+        elif char.isdigit():
+            while position < length and (sql[position].isalnum() or sql[position] in "._"):
+                position += 1
+        elif _word_char(char):
+            end = position
+            while end < length and _word_char(sql[end]):
+                end += 1
+            yield "word", sql[position:end]
+            position = end
+        elif char in _SPACE:
+            position += 1
+        else:
+            yield "mark", char
+            position += 1
+
+
+def has_parameter_mark(sql):
+    """Whether `sql` holds a parameter mark such as $1 outside strings and comments."""
+    return any(kind == "param" for kind, _text in _code_tokens(sql))
+
+
+def has_key_word(sql, *words):
+    """Whether one of `words` (lower case) stands in `sql` as a key word: unquoted, outside
+    strings and comments."""
+    wanted = frozenset(words)
+    return any(kind == "word" and text.lower() in wanted for kind, text in _code_tokens(sql))
+
+
+# The schema's name stands in the server's message as it is, in every language.
+_APP_IN_MESSAGE = re.compile(r"(?<![A-Za-z0-9_$])app(?![A-Za-z0-9_$])")
+
+
+def is_parameter_mark_error(code, sql, session_alive):
+    """Whether an error is the server's answer to a parameter mark ($1) that got no value.
+    The server calls that a protocol violation (08P01), like a broken connection, and its
+    message is in the server's language (lc_messages, which a reader cannot change). So the
+    decision rests on what does not depend on the language: after a parameter mark the
+    session is still alive, and the text holds the mark."""
+    return code == "08P01" and (session_alive or has_parameter_mark(sql))
+
+
+def is_private_schema_error(code, schema_name, primary):
+    """Whether a missing right (42501) is about the private schema app: the server's
+    diagnostic says so, or the message names the schema app (the name stands as it is in every
+    language). The SQL text is not asked: in "SELECT app.x, pg_read_file(...) FROM t app" the
+    `app` is a table's other name, and the missing right is the function's."""
+    return code == "42501" and (schema_name == "app"
+                                or _APP_IN_MESSAGE.search(primary or "") is not None)
+
+
 def _line_and_column(text, position):
     """(line, column), both from 1, of the character at `position` (from 1)."""
     before = text[:max(0, position - 1)]
@@ -200,7 +310,7 @@ class PostgresReader:
 
     def __init__(self, store):
         self._store = store
-        self._psycopg = load_psycopg()
+        self._psycopg = load_psycopg(getattr(store, "settings", None))
         self._connection = None
         self._used = False
         self._expired = False
@@ -287,7 +397,7 @@ class PostgresReader:
         deadline = threading.Timer(timeout_seconds, self._on_deadline)
         hard_stop = threading.Timer(timeout_seconds + HARD_STOP_SECONDS, self._on_hard_stop)
         deadline.daemon = hard_stop.daemon = True
-        state = {"prefix": 0}
+        state = {"prefix": 0, "started": time.monotonic()}
         try:
             connection = self._connect(timeout_ms)
             with self._lock:
@@ -418,7 +528,11 @@ class PostgresReader:
         diag = getattr(error, "diag", None)
         primary = (getattr(diag, "message_primary", None) or "").strip()
         if code == "57014":             # the server cancelled the statement
-            if self._expired or "timeout" in primary:
+            # Its statement_timeout, or this reader's deadline, or someone else's cancel. The
+            # time that has passed tells them apart in every language.
+            started = state.get("started")
+            ran = None if started is None else time.monotonic() - started
+            if self._expired or (ran is not None and ran >= timeout_seconds - 0.05):
                 return sqlrun.timed_out(timeout_seconds)
             return sqlrun.failed("The query was cancelled.")
         if code in ("25P04", "25P03") or (self._expired and not code):
@@ -446,19 +560,20 @@ class PostgresReader:
         hint = (getattr(diag, "message_hint", None) or "").strip()
         if hint:
             said += " Hint: %s" % hint.splitlines()[0]
-        if code == "42601" and "multiple commands" in primary:
+        if code == "42601" and statement_end(sql)[1]:     # more after the first ';'
             return sqlrun.refused("Expert mode runs one statement at a time. Remove "
                                   "everything after the first ';'.", details)
-        if code == "42501" and "schema app" in primary:
+        if is_private_schema_error(code, getattr(diag, "schema_name", None), primary):
             return sqlrun.refused(sqlrun.PRIVATE_PART, details)
         if code in ("42501", "25006"):  # no right to do that; the transaction is read-only
             return sqlrun.refused(_ONLY_READS + said, details)
-        if code == "0A000" and "DECLARE CURSOR" in primary:
+        if (code == "0A000" and sqlrun.leading_word(sql, "postgresql") == "WITH"
+                and has_key_word(sql, "insert", "update", "delete", "merge")):
             return sqlrun.refused(_ONLY_READS + "A WITH part that changes data cannot be run.",
                                   details)
         if code == "42601":
             word = sqlrun.leading_word(sql, "postgresql")
-            if word not in sqlrun.FIRST_WORDS["postgresql"] or "INTO is not allowed" in primary:
+            if word not in sqlrun.FIRST_WORDS["postgresql"] or has_key_word(sql, "into"):
                 return sqlrun.refused(
                     _ONLY_READS + "A statement must be a query (SELECT, WITH, VALUES, TABLE "
                     "or EXPLAIN). " + said, details)
@@ -469,7 +584,7 @@ class PostgresReader:
         if code.startswith(("53", "54")):
             return sqlrun.refused("This query is larger than the database allows. " + said,
                                   details)
-        if code == "08P01" and "bind message supplies" in primary:
+        if is_parameter_mark_error(code, sql, self._session_alive(diag)):
             # A placeholder such as $1 with no value: the server calls that a protocol
             # violation, but the connection is fine and the SQL is what must change.
             return sqlrun.refused(sqlrun.PARAMETER_MARK, details)
@@ -478,6 +593,21 @@ class PostgresReader:
                                "that the database is running (pcldb db status) and try again.",
                                code="db_down")
         return sqlrun.failed(said, details)
+
+    def _session_alive(self, diag):
+        """Whether the server session survived the error: an ERROR (not FATAL or PANIC) on a
+        connection that psycopg still holds open. Neither depends on the server's language."""
+        severity = getattr(diag, "severity_nonlocalized", None)
+        if severity is not None and severity != "ERROR":
+            return False
+        with self._lock:
+            connection = self._connection
+        if connection is None:
+            return False
+        try:
+            return not connection.closed and not connection.broken
+        except Exception:
+            return False
 
     # -- closing ----------------------------------------------------------------------------
 

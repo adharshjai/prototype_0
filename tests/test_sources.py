@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -10,6 +11,38 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from pcldb import sources
 from pcldb.errors import PclError
 from tests import registry_support as rs
+
+
+def make_junction(target, link):
+    """Make the Windows directory junction `link` that points at the folder `target`.
+    None when it was made, else why not (both ways were tried)."""
+    reasons = []
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+        return None
+    except (ImportError, AttributeError, OSError) as error:
+        reasons.append("_winapi.CreateJunction: %s" % error)
+    try:
+        done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=60)
+    except (OSError, subprocess.SubprocessError) as error:
+        reasons.append("mklink /J: %s" % error)
+    else:
+        if done.returncode == 0 and os.path.lexists(link):
+            return None
+        reasons.append("mklink /J: exit code %s, %s" % (done.returncode,
+                                                        (done.stdout + done.stderr).strip()))
+    return "; ".join(reasons)
+
+
+def remove_junction(link):
+    """Remove the junction itself (never what it points at)."""
+    try:
+        os.rmdir(link)
+    except OSError:
+        pass
 
 
 class FolderCase(unittest.TestCase):
@@ -242,16 +275,46 @@ class DocumentFromFolderTests(FolderCase):
         self.assertFalse(util.is_junction(os.lstat(self.tmp)))
         made = self.placed()
         inner = made["folder"] / "j"
+
+        def refused():
+            with self.assertRaises(PclError) as caught:
+                sources.document_from_folder(made["folder"], rs.SIMULATED_PATH)
+            self.assertIn('"j" is a link or a special file', caught.exception.message)
+            self.assertIn("plain files only", caught.exception.message)
+            self.assertFalse(sources._is_real_folder(inner))
+
+        if os.name == "nt":
+            # A real junction, to a folder outside the session (no administrator rights needed).
+            outside = self.tmp / "outside"
+            outside.mkdir()
+            (outside / "outside.txt").write_text("not of this session", encoding="utf-8")
+            problem = make_junction(outside, inner)
+            if problem:
+                self.skipTest("this computer did not let the test make a junction: " + problem)
+            self.addCleanup(remove_junction, inner)
+            # What pcldb reads: os.lstat and DirEntry.stat(follow_symlinks=False) (DirEntry
+            # leaves st_ino 0 on Windows, but the reparse tag is there).
+            self.assertTrue(util.is_junction(os.lstat(inner)))
+            entry, = [entry for entry in os.scandir(made["folder"]) if entry.name == "j"]
+            self.assertTrue(util.is_junction(entry.stat(follow_symlinks=False)))
+            refused()
+            # A junction given as the session folder itself is refused too.
+            via = self.tmp / "session through a junction"
+            problem = make_junction(made["folder"], via)
+            if problem:
+                self.skipTest("this computer did not let the test make a junction: " + problem)
+            self.addCleanup(remove_junction, via)
+            with self.assertRaises(PclError) as caught:
+                sources.document_from_folder(via, rs.SIMULATED_PATH)
+            self.assertIn("or it is a link", caught.exception.message)
+            return
+        # Elsewhere there are no junctions: a stand-in says that this one folder is one.
         inner.mkdir()
         (inner / "outside.txt").write_text("not of this session", encoding="utf-8")
         number = os.lstat(inner).st_ino
         with mock.patch.object(util, "is_junction",
                                lambda info: getattr(info, "st_ino", None) == number):
-            with self.assertRaises(PclError) as caught:
-                sources.document_from_folder(made["folder"], rs.SIMULATED_PATH)
-            self.assertIn("j", caught.exception.message)
-            self.assertIn("plain files only", caught.exception.message)
-            self.assertFalse(sources._is_real_folder(inner))
+            refused()
 
     def test_the_folder_must_be_a_real_folder(self):
         made = self.placed()

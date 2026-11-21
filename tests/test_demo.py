@@ -500,7 +500,7 @@ class DemoCases:
         text = out.getvalue()
         self.assertTrue(text.isascii())
         self.assertIn("Loaded the demo data: 16 sessions (all simulated, all tagged demo)", text)
-        self.assertIn("pcldb demo clear", text)
+        self.assertIn("Remove it with: %s demo clear" % util.LAUNCHER, text)
         self.assertEqual(self.count("pcl.sessions"), 16)
         out = io.StringIO()
         self.assertEqual(demo.cmd_demo(types.SimpleNamespace(action="clear"), self.settings,

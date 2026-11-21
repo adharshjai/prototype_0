@@ -163,6 +163,30 @@ def remove_tree(path, attempts=20):
     return not Path(path).exists()
 
 
+def make_temp_folder(prefix, windows=None):
+    """A new, empty temporary folder whose name starts with `prefix`; its path as text.
+
+    On Windows it is made without a mode, so it inherits the temporary folder's rights:
+    tempfile.mkdtemp's mode 0o700 becomes, on Python 3.13 and newer, rights for SYSTEM,
+    Administrators and the owner only, and PostgreSQL's programs (which run with reduced rights
+    on Windows) then cannot open anything in it. The same helper as in tests/support.py.
+    """
+    if windows is None:
+        windows = IS_WINDOWS
+    if not windows:
+        return tempfile.mkdtemp(prefix=prefix)
+    base = os.path.abspath(tempfile.gettempdir())
+    for _attempt in range(100):
+        path = os.path.join(base, prefix + os.urandom(4).hex())
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            continue
+        return path
+    raise FileExistsError("no unused temporary folder name starting with %r in %s"
+                          % (prefix, base))
+
+
 def find_json(text):
     """The first JSON object a command printed (text after it is left alone)."""
     start = text.find("{")
@@ -190,7 +214,7 @@ class EngineSmoke:
         self.python = python or sys.executable
         self.keep = keep
         self.launcher = launcher and engine == "sqlite"
-        self.root = Path(tempfile.mkdtemp(prefix="pcldb smoke %s " % engine))
+        self.root = Path(make_temp_folder("pcldb smoke %s " % engine))
         self.project = self.root / "project"
         self.user_dir = self.root / "user"
         self.env = child_environment(os.environ, self.project, self.user_dir)

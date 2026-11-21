@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import contextlib
 import decimal
+import os
 import re
+from pathlib import Path
 
 from .. import util
 from ..errors import PclError, Unavailable
@@ -51,16 +53,35 @@ _NO_SUCH_ROLE = re.compile(r'role "[^"]*" does not exist')
 _NO_SUCH_DATABASE = re.compile(r'database "[^"]*" does not exist')
 
 
-def load_psycopg():
-    """The psycopg module, or a PclError that says how to get it."""
+def _is_set_up(settings):
+    """True when the project already has its settings file (it was set up). Without
+    `settings`, the project folder is the one pcldb.config would use."""
+    config_path = getattr(settings, "config_path", None)
+    if config_path is None:
+        from ..config import CONFIG_NAME, default_project_dir
+        folder = os.environ.get("PCLDB_DIR", "").strip() or default_project_dir()
+        config_path = Path(folder).expanduser() / CONFIG_NAME
+    try:
+        return config_path.exists()
+    except OSError:
+        return False
+
+
+def load_psycopg(settings=None):
+    """The psycopg module, or a PclError that says how to get it. The way out is pgcluster's: a
+    new project may still choose SQLite; one that was set up with PostgreSQL keeps it (its
+    records are in it), so there only installing psycopg helps."""
     try:
         import psycopg
     except ImportError:
-        raise PclError(
-            "The PostgreSQL engine needs the Python package psycopg, which is not installed. "
-            "Run: %s   Or use the engine that needs nothing: "
-            "pcldb setup --engine sqlite" % util.INSTALL_PY, code="psycopg_missing",
-            status=503) from None
+        if _is_set_up(settings):
+            advice = ("Run: %s   This project was set up with PostgreSQL, and its records are "
+                      "in it." % util.INSTALL_PY)
+        else:
+            advice = ("Run: %s   Or use the engine that needs nothing: %s setup --engine sqlite"
+                      % (util.INSTALL_PY, util.LAUNCHER))
+        raise PclError("The PostgreSQL engine needs the Python package psycopg, which is not "
+                       "installed. " + advice, code="psycopg_missing", status=503) from None
     return psycopg
 
 
@@ -173,7 +194,7 @@ class PostgresStore(Store):
 
     def _external_parts(self, role):
         """The parsed connection string of an external role, checked. Holds the password."""
-        psycopg = load_psycopg()
+        psycopg = load_psycopg(self.settings)
         from psycopg.conninfo import conninfo_to_dict
         name = "database.postgresql.external.%s (or the environment variable %s)" % (
             role, _SETTING_NAMES[role])
@@ -203,7 +224,7 @@ class PostgresStore(Store):
         the environment can change where or as whom the connection goes."""
         if role not in ROLES:
             raise ValueError("unknown role %r (known: owner, app, reader)" % (role,))
-        load_psycopg()
+        load_psycopg(self.settings)
         from psycopg.conninfo import make_conninfo
         extra = {"connect_timeout": CONNECT_TIMEOUT_SECONDS,
                  "application_name": "pcldb-%s" % role, "client_encoding": "utf8"}
@@ -259,7 +280,7 @@ class PostgresStore(Store):
     # -- connecting ----------------------------------------------------------------------------
 
     def _connect(self, role, *, dbname=None, autocommit=False):
-        psycopg = load_psycopg()
+        psycopg = load_psycopg(self.settings)
         from psycopg.conninfo import make_conninfo
         info = self.conninfo(role)
         if dbname is not None:
@@ -306,7 +327,7 @@ class PostgresStore(Store):
 
     @contextlib.contextmanager
     def app(self):
-        psycopg = load_psycopg()
+        psycopg = load_psycopg(self.settings)
         with one_block_at_a_time("postgresql %s %s %s" % self._place()):
             connection = self._connect("app")
             db = None
@@ -404,7 +425,7 @@ class PostgresStore(Store):
         the schemas, tables, views, comments and grants; then the hardening of pg_hardening.
         Safe to call again: an initialised store only gets its grants applied once more.
         In local mode the server is started when needed and is left running."""
-        load_psycopg()
+        load_psycopg(self.settings)
         if self.mode == "local":
             cluster = pgcluster.LocalCluster(self.settings)
             cluster.init()
@@ -440,7 +461,7 @@ class PostgresStore(Store):
     def _create_database(self, connection, name):
         """CREATE DATABASE (when missing) on an autocommit connection. The locale comes from
         template0, which is what initdb was told; text columns are COLLATE "C" anyway."""
-        psycopg = load_psycopg()
+        psycopg = load_psycopg(self.settings)
         from psycopg import sql
         if connection.execute("SELECT 1 FROM pg_database WHERE datname = %s", [name]).fetchone():
             return False
@@ -457,7 +478,7 @@ class PostgresStore(Store):
         return True
 
     def _ensure_local_roles_and_database(self):
-        psycopg = load_psycopg()
+        psycopg = load_psycopg(self.settings)
         passwords = pgcluster.read_local_secrets(self.settings)
         connection = self._connect("owner", dbname="postgres", autocommit=True)
         try:
@@ -484,7 +505,7 @@ class PostgresStore(Store):
                     "that role." % (role, user, ROLES[role]), code="bad_setting")
 
     def _ensure_external_database(self):
-        psycopg = load_psycopg()
+        psycopg = load_psycopg(self.settings)
         try:
             connection = self._connect("owner", autocommit=True)
         except Unavailable as error:
@@ -516,7 +537,7 @@ class PostgresStore(Store):
 
     def _build(self, connection):
         """Inside one transaction as the owner: the missing schemas, then grants and hardening."""
-        psycopg = load_psycopg()
+        psycopg = load_psycopg(self.settings)
         from psycopg import sql
         wanted = str(schema_def.SCHEMA_VERSION)
         try:
@@ -566,7 +587,7 @@ class PostgresStore(Store):
     def destroy(self):
         """Drop the schemas pcl and app with everything in them. The database, the roles and
         (local mode) the cluster stay."""
-        psycopg = load_psycopg()
+        psycopg = load_psycopg(self.settings)
         self._ready = False
         if self.mode == "local":
             cluster = pgcluster.LocalCluster(self.settings)

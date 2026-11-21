@@ -1668,6 +1668,21 @@ class StoreAskCases:
         self.assertRegex(row["at_utc"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
         self.assertIsInstance(row["elapsed_ms"], int)
 
+    def test_questions_that_only_sound_negative_give_what_was_asked_for(self):
+        # C2-02: "I can't find the r6g sessions" listed every session but r6g, and "sessions
+        # that don't need review" listed the ones that do.
+        def folders(question):
+            result = ask.answer(question, store=self.store, settings=self.settings, llm=None,
+                                user=None, include_simulated=True, now=NOW,
+                                search_run=self.search, limiter=ask.RateLimiter())
+            return sorted(row["folder"] for row in result["results"])
+
+        self.assertEqual(folders("I can't find the r6g sessions"), ["scan_20261119_019"])
+        self.assertEqual(folders("we couldn't find r6g"), folders("r6g sessions"))
+        self.assertNotIn("scan_20261119_019", folders("r6g was not detected"))
+        self.assertEqual(folders("sessions that don't need review"), ["scan_20261112_012"])
+        self.assertEqual(folders("sessions that need review"), ["scan_20261119_019"])
+
     def test_answer_with_db_uses_the_callers_transaction(self):
         with self.store.app() as db:
             result = ask.answer("how many sessions per instrument", db=db,

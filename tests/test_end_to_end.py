@@ -27,13 +27,12 @@ import re
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 
-from pcldb import config
+from pcldb import config, util
 from pcldb.client import Client
 from tests import registry_support as rs
 from tests import support
@@ -123,7 +122,7 @@ class StoryCases:
         super().setUp()
         if self.engine == "postgresql":
             support.require_postgres()
-        self.root = Path(tempfile.mkdtemp(prefix="pcldb e2e "))
+        self.root = Path(support.make_temp_folder("pcldb e2e "))     # Windows: no 0o700
         self.addCleanup(support.remove_tree, self.root)
         self.project = self.root / "project"
         self.user_dir = self.root / "user"
@@ -234,7 +233,7 @@ class StoryCases:
             with_token = child_environment(self.project, self.user_dir, {"PCLDB_TOKEN": token})
             code, output = pcldb(register, with_token)
             self.assertEqual(code, 1, output)
-            self.assertIn("Remove the demo data first: pcldb demo clear", output)
+            self.assertIn("Remove the demo data first: %s demo clear" % util.LAUNCHER, output)
             code, output = pcldb(["demo", "clear"], self.env)
             self.assertEqual(code, 0, output)
             code, output = pcldb(register, with_token)

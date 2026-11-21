@@ -429,6 +429,29 @@ class TestSmokeHelpers(unittest.TestCase):
         self.assertTrue(smoke.remove_tree(folder))
         self.assertFalse(folder.exists())
 
+    def test_temporary_folders_on_windows_are_made_without_a_mode(self):
+        from unittest import mock
+        from tests.test_pgcluster import check_temp_folder_helper
+        check_temp_folder_helper(self, smoke.make_temp_folder,
+                                 lambda: mock.patch.object(smoke, "IS_WINDOWS", True),
+                                 lambda: mock.patch.object(smoke, "IS_WINDOWS", False))
+
+    def test_the_smoke_folder_comes_from_the_helper(self):
+        from unittest import mock
+        made = []
+        real_helper = smoke.make_temp_folder
+
+        def recording(prefix, windows=None):
+            path = real_helper(prefix, windows)
+            made.append(path)
+            return path
+
+        with mock.patch.object(smoke, "make_temp_folder", recording):
+            engine = smoke.EngineSmoke("postgresql")
+        self.addCleanup(smoke.remove_tree, engine.root)
+        self.assertEqual([Path(path) for path in made], [engine.root])
+        self.assertTrue(engine.root.name.startswith("pcldb smoke postgresql "))
+
 
 class TestSmokeRun(unittest.TestCase):
 

@@ -32,7 +32,7 @@ import unittest
 
 from pcldb import sqlrun, util
 from pcldb.errors import PclError
-from pcldb.store import reader_sqlite
+from pcldb.store import open_store, reader_sqlite
 from tests import support
 
 MARKER = "PRIVATE-MARKER-5e1f9c"
@@ -51,6 +51,43 @@ def _fan_out(depth):
     for level in range(1, depth + 1):
         parts.append("c%d(x) AS (SELECT a.x FROM c%d a, c%d b)" % (level, level - 1, level - 1))
     return "WITH " + ", ".join(parts) + " SELECT count(*) FROM c%d" % depth
+
+
+def _chain(parts, before=""):
+    """WITH parts, each reading the one before (through a sub-query behind the operators
+    `before` when given): sub-queries nested `parts` deep without a single bracket level more."""
+    if before:
+        body = ["a%d AS (SELECT %s(SELECT x FROM a%d) x)" % (i, before, i - 1)
+                for i in range(1, parts)]
+    else:
+        body = ["a%d AS (SELECT * FROM a%d)" % (i, i - 1) for i in range(1, parts)]
+    return ("WITH a0 AS (SELECT 1 x), " + ", ".join(body)
+            + " SELECT * FROM a%d" % (parts - 1))
+
+
+def _flat_chain(parts, before):
+    """WITH parts that each put the operators `before` on the column of the one before:
+    SQLite makes ONE expression of them, as deep as all the operators together."""
+    body = ["a%d AS (SELECT %sx x FROM a%d)" % (i, before, i - 1) for i in range(1, parts)]
+    return ("WITH a0 AS (SELECT 1 x), " + ", ".join(body)
+            + " SELECT * FROM a%d" % (parts - 1))
+
+
+def _has_dbstat():
+    """Whether this SQLite has the dbstat table (Python's Windows build has none)."""
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute("SELECT count(*) FROM dbstat").fetchone()
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        connection.close()
+
+
+# Where this SQLite has dbstat, the authorizer refuses it; where it has none, SQLite itself
+# stops at "no such table: dbstat" (an error, so still nothing is read).
+_DBSTAT = REFUSED if _has_dbstat() else ERROR
 
 
 # (statement, outcome, the layer that stops it). {app} = the private file, {dir} = its folder.
@@ -140,9 +177,9 @@ HOSTILE = [
     # ---- other schemas' lists of tables, and SQLite's built-in tables
     ("SELECT * FROM temp.sqlite_master", REFUSED, "authorizer"),
     ("SELECT * FROM sqlite_temp_master", REFUSED, "authorizer"),
-    ("SELECT * FROM dbstat", REFUSED, "authorizer"),
-    ("SELECT count(*) FROM pcl.dbstat", REFUSED, "authorizer"),
-    ("SELECT * FROM sessions NATURAL JOIN dbstat", REFUSED, "authorizer"),
+    ("SELECT * FROM dbstat", _DBSTAT, "authorizer (or no such table in this SQLite)"),
+    ("SELECT count(*) FROM pcl.dbstat", _DBSTAT, "authorizer (or no such table)"),
+    ("SELECT * FROM sessions NATURAL JOIN dbstat", _DBSTAT, "authorizer (or no such table)"),
     ("SELECT * FROM fts3tokenize('simple', 'a b')", REFUSED, "authorizer"),
     # ---- functions that reach outside or tell about the build
     ("SELECT load_extension('{dir}/x')", REFUSED, "authorizer"),
@@ -188,7 +225,9 @@ HOSTILE = [
     ("SELECT * FROM " + "(SELECT * FROM " * 1000 + "(SELECT 1)" + ")" * 1000, REFUSED,
      "limit: brackets"),
     ("SELECT " + " OR ".join(["1"] * 4000), ERROR, "limit"),
-    (" UNION ALL ".join(["SELECT 1"] * 600), ERROR, "limit"),
+    (" UNION ALL ".join(["SELECT 1"] * 150), ERROR, "limit: terms of a compound SELECT"),
+    (" UNION ALL ".join(["SELECT 1"] * 600), REFUSED, "limit: SELECT parts"),
+    (_chain(700), REFUSED, "limit: SELECT parts"),
     # ---- allowed, and harmless: what a reader may see
     ("SELECT printf('%.*c', 2000000000, 'x')", OK, "allowed: SQLite gives NULL"),
     (_recursive(100000000) + "SELECT n FROM r", OK, "allowed: cut at the row limit"),
@@ -523,16 +562,33 @@ class TestDeadline(ReaderBase, unittest.TestCase):
         # The server runs every request in a thread. A statement that nests thousands deep
         # must end in an error message, not in a crash of the process, on every SQLite
         # version (from 3.46 SQLite's parser no longer stops deep nesting itself: WIN-01).
+        # Sub-queries nest without brackets too: a chain of WITH parts, each reading the one
+        # before (SEC2-05; 700 parts ended the process in this thread), and such a chain whose
+        # parts read the one before behind long chains of operators, which SQLite walks before
+        # it checks their depth (on SQLite 3.50, 20 parts behind 450 NOTs ended the process
+        # here). SEC2-05, second round: parts that put the operators on the column of the one
+        # before become one expression as deep as all of them (on 3.50, 150 parts of 495 '~'
+        # ended the process even with the 32 MB worker), so the text is at most
+        # READER_SQL_CHARS long, whatever max_sql_chars says. Every text below but the last
+        # stays under that cap, so SQLite itself meets them.
         results = []
         limit = 4 * self.settings.sql.max_sql_chars
+        within, beyond = _flat_chain(57, "~" * 495), _flat_chain(150, "~" * 495)
+        self.assertLess(len(within), reader_sqlite.READER_SQL_CHARS)
+        self.assertGreater(len(beyond), reader_sqlite.READER_SQL_CHARS)
 
         def work():
-            for sql in ("SELECT " + "(" * 20000 + "1" + ")" * 20000,
+            for sql in ("SELECT " + "(" * 14000 + "1" + ")" * 14000,
                         "SELECT " + "(SELECT " * 3000 + "1" + ")" * 3000,
-                        "SELECT * FROM " + "(SELECT * FROM " * 3000 + "(SELECT 1)" + ")" * 3000,
-                        "SELECT " + "NOT " * 15000 + "1",
-                        "SELECT " + " + ".join(["1"] * 15000),
-                        "SELECT json_valid('" + "[" * 60000 + "')"):
+                        "SELECT * FROM " + "(SELECT * FROM " * 1500 + "(SELECT 1)" + ")" * 1500,
+                        "SELECT " + "NOT " * 7000 + "1",
+                        "SELECT " + " + ".join(["1"] * 7000),
+                        "SELECT json_valid('" + "[" * 29000 + "')",
+                        _chain(700),
+                        _chain(15, "NOT " * 450),
+                        _chain(55, "~" * 495),
+                        _chain(reader_sqlite.SELECT_PARTS - 1),
+                        within, beyond):
                 assert len(sql) < limit     # shorter than the SQL length limit: SQLite parses it
                 results.append(self.attempt(sql)[0])
 
@@ -543,7 +599,28 @@ class TestDeadline(ReaderBase, unittest.TestCase):
             thread.join()
         finally:
             threading.stack_size(previous)
-        self.assertEqual(results, [REFUSED, REFUSED, REFUSED, ERROR, ERROR, OK])
+        # 57 parts (29,000 characters) run on 3.50 (slowly: the time limit may end them);
+        # SQLite 3.45 stops them in its parser. What matters is that the process lives.
+        self.assertIn(results[10], (OK, ERROR, TIMED_OUT))
+        self.assertEqual(results[:10] + results[11:], [REFUSED, REFUSED, REFUSED, ERROR, ERROR,
+                                                       OK, REFUSED, ERROR, ERROR, OK, REFUSED])
+
+    def test_the_text_is_short_whatever_max_sql_chars_says(self):
+        # SEC2-05, second round: a project may raise sql.max_sql_chars to 10,000,000; the
+        # depth SQLite walks unchecked grows with the text, so the reader keeps its own cap.
+        with support.TempProject("sqlite", {"sql.max_sql_chars": 1000000}) as project:
+            store = open_store(project.settings)
+            store.initialize()
+            cap = reader_sqlite.READER_SQL_CHARS
+            for sql in ("SELECT '" + "x" * cap + "'", _flat_chain(150, "~" * 495)):
+                with self.assertRaises(PclError) as caught:
+                    sqlrun.run_sql(store, sql, settings=project.settings)
+                self.assertEqual(caught.exception.code, "sql_refused")
+                self.assertIn("expert mode on SQLite takes at most %d" % cap,
+                              caught.exception.message)
+            short = "SELECT '" + "x" * (cap - 10) + "'"
+            self.assertEqual(sqlrun.run_sql(store, short, settings=project.settings)["row_count"],
+                             1)
 
     def test_brackets_up_to_the_limit_are_left_to_sqlite(self):
         depth = reader_sqlite.BRACKET_DEPTH
@@ -557,6 +634,18 @@ class TestDeadline(ReaderBase, unittest.TestCase):
         self.assertEqual(self.attempt("SELECT '" + "(" * 5000 + "' AS text")[0], OK)
         self.assertEqual(reader_sqlite.bracket_depth(
             "SELECT '((', \"((\", `((`, [((], (1) -- ((\n/* (( */"), 1)
+
+    def test_select_parts_up_to_the_limit_are_left_to_sqlite(self):
+        at_limit = _chain(reader_sqlite.SELECT_PARTS - 1)
+        self.assertEqual(reader_sqlite.select_parts(at_limit), reader_sqlite.SELECT_PARTS)
+        self.assertEqual(self.attempt(at_limit)[0], OK)
+        outcome, text = self.attempt(_chain(reader_sqlite.SELECT_PARTS))
+        self.assertEqual(outcome, REFUSED)
+        self.assertIn("SELECT parts", text)
+        self.assertNotIn("WITH part can help", text)
+        self.assertEqual(reader_sqlite.select_parts(
+            "SELECT 'select', \"select\", `select`, [select], selected, select_x, x_select, "
+            "(select 1) -- select\n/* SELECT */ SeLeCt"), 3)
 
 
 class TestATamperedCatalogue(ReaderBase, unittest.TestCase):

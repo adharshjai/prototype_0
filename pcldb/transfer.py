@@ -269,6 +269,7 @@ def _check_row(table, row, number, shown):
 
 
 SETUP_ADMIN_NAME = "admin"     # the user that pcldb setup and pcldb db reset make
+ADMIN_TOKEN_FILE = "admin_token.txt"    # in var/: that admin's token (cli.ADMIN_TOKEN_FILE)
 
 
 def _setup_admin_only(db):
@@ -302,13 +303,13 @@ def _require_empty(db, include_users):
                     "This database already has %d row(s) in %s (users other than the admin "
                     "that pcldb setup made), so the users of the dump cannot be restored into "
                     "it. Restore without --include-users to keep the users that are here, or "
-                    "start from an empty database (everything in it is removed): pcldb db reset "
-                    "--yes, then the same restore again" % (count, name), code="not_empty",
-                    details={"table": name})
+                    "start from an empty database (everything in it is removed): %s db reset "
+                    "--yes, then the same restore again" % (count, name, util.LAUNCHER),
+                    code="not_empty", details={"table": name})
             raise Conflict(
                 "This database is not empty: %s has %d row(s). A dump is restored into an "
                 "empty database only, so nothing was restored. To empty this one (everything "
-                "in it is removed) run: pcldb db reset --yes" % (name, count),
+                "in it is removed) run: %s db reset --yes" % (name, count, util.LAUNCHER),
                 code="not_empty", details={"table": name})
     return setup_admin
 
@@ -322,16 +323,34 @@ def _drop_setup_admin(db, user):
     return hashes
 
 
-def restore(store, path, *, include_users=False):
+def _token_in_file(path):
+    """The token held by a token file, or None."""
+    if path is None:
+        return None
+    try:
+        return Path(path).read_text(encoding="utf-8").strip() or None
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def restore(store, path, *, include_users=False, admin_token_file=None):
     """Load a dump into an empty, initialised store, in one transaction.
 
     `app.users` and `app.tokens` are skipped unless `include_users=True`. With it, a store
     whose only user is the admin that pcldb setup made counts as empty: that admin and its
-    tokens are removed in the same transaction and the dump's users take their place. Returns
-    {"file", "dump_engine", "made_utc", "tables": {name: rows written}, "rows": total,
+    tokens are removed in the same transaction and the dump's users take their place.
+
+    `admin_token_file` is var/admin_token.txt. When it holds a token of the replaced admin
+    (setup wrote over the file that held the dump's admin token) and the dump has a user
+    `admin` that is switched on, that user gets a new token in the same transaction, saved in
+    that file (mode 0600) once the transaction is committed.
+
+    Returns {"file", "dump_engine", "made_utc", "tables": {name: rows written}, "rows": total,
     "skipped": {name: rows left out}, "replaced_setup_admin": bool, "replaced_token_sha256":
-    [the removed tokens' SHA-256]}. Any refusal is a PclError and leaves the store as it was.
+    [the removed tokens' SHA-256], "admin_token_file": the file that got the new token, or
+    None}. Any refusal is a PclError and leaves the store as it was.
     """
+    from . import auth
     path = Path(path)
     shown = _show(path.name)
     written = {table.qualified: 0 for table in schema_def.TABLES}
@@ -339,6 +358,7 @@ def restore(store, path, *, include_users=False):
     skipped = {}
     header = None
     replaced_tokens = None
+    new_admin_token = None
     with store.app() as db:
         expected = None
         pending_table, pending = None, []
@@ -404,11 +424,30 @@ def restore(store, path, *, include_users=False):
             raise PclError("The dump %s holds rows of %s that its first line does not list. "
                            "It was changed after it was written. Nothing was restored."
                            % (shown, extra[0]), code="bad_dump", details={"table": extra[0]})
+        if replaced_tokens:
+            saved = _token_in_file(admin_token_file)
+            admin = auth.find_user(db, SETUP_ADMIN_NAME)
+            if (saved and auth.token_sha256(saved) in replaced_tokens and admin is not None
+                    and not admin.disabled):
+                new_admin_token = auth.issue_token(db, SETUP_ADMIN_NAME,
+                                                   label="made by pcldb restore")
+    if new_admin_token is not None:
+        # Saved only now that the token is committed, so the file never holds a token that
+        # does not exist; it replaces the setup admin's token, which no longer works.
+        try:
+            auth.save_token_file(admin_token_file, new_admin_token)
+        except OSError as error:
+            raise PclError(
+                "The dump was restored, but the new token of the user \"%s\" could not be saved "
+                "in %s (%s). Make another one with: %s token new --user %s"
+                % (SETUP_ADMIN_NAME, admin_token_file, error.strerror or error, util.LAUNCHER,
+                   SETUP_ADMIN_NAME), code="token_not_saved") from None
     return {"file": str(path), "dump_engine": header.get("engine"),
             "made_utc": header.get("made_utc"), "tables": written,
             "rows": sum(written.values()), "skipped": skipped,
             "replaced_setup_admin": replaced_tokens is not None,
-            "replaced_token_sha256": replaced_tokens or []}
+            "replaced_token_sha256": replaced_tokens or [],
+            "admin_token_file": str(admin_token_file) if new_admin_token is not None else None}
 
 
 # ---------------------------------------------------------------------- the catalogue as one file
@@ -527,25 +566,26 @@ def _file_argument(args, example):
 def cmd_dump(args, settings, *, out=None):
     """`pcldb dump FILE`: every table as JSON Lines. Returns 0."""
     from .store import open_store
-    path = _file_argument(args, "pcldb dump pcl_dump.jsonl")
+    path = _file_argument(args, util.LAUNCHER + " dump pcl_dump.jsonl")
     result = dump(open_store(settings), path)
     filled = sum(1 for count in result["tables"].values() if count)
     _say("Wrote %s: %d rows from %d tables (engine %s, schema version %d)."
          % (path, result["rows"], filled, result["engine"], result["schema_version"]), out)
     _say("The file holds no token (only the SHA-256 of each), but it does hold user names and "
          "whatever was typed into notes. Keep it private.", out)
-    _say("Load it into an empty database of either engine with: pcldb restore %s"
-         % _typed(path), out)
+    _say("Load it into an empty database of either engine with: %s restore %s"
+         % (util.LAUNCHER, _typed(path)), out)
     return 0
 
 
 def cmd_restore(args, settings, *, out=None):
     """`pcldb restore FILE [--include-users]`: load a dump into an empty database. Returns 0."""
     from .store import open_store
-    path = _file_argument(args, "pcldb restore pcl_dump.jsonl")
+    path = _file_argument(args, util.LAUNCHER + " restore pcl_dump.jsonl")
     include_users = bool(getattr(args, "include_users", False))
     store = open_store(settings)
-    result = restore(store, path, include_users=include_users)
+    admin_file = settings.var_dir / ADMIN_TOKEN_FILE
+    result = restore(store, path, include_users=include_users, admin_token_file=admin_file)
     tables = result["tables"]
     _say("Restored %s (made %s on the %s engine) into the %s database: %d rows."
          % (path, result["made_utc"] or "at an unknown time", result["dump_engine"] or "unknown",
@@ -558,11 +598,19 @@ def cmd_restore(args, settings, *, out=None):
         _say("The user \"%s\" that pcldb setup made was replaced by the users of the dump "
              "(%d user(s), %d token(s))." % (SETUP_ADMIN_NAME, tables["app.users"],
                                              tables["app.tokens"]), out)
+        if result["admin_token_file"]:
+            _say("The dump's user \"%s\" got a new token, saved in %s, because setup had "
+                 "written over the file that held its old one."
+                 % (SETUP_ADMIN_NAME, result["admin_token_file"]), out)
         if removed:
-            _say("Its token no longer works, so these files were removed: %s"
+            _say("The replaced admin's tokens no longer work, so these files were removed: %s"
                  % ", ".join(removed), out)
-        _say("The dump's tokens work again where they were saved. To make a new token: pcldb "
-             "token new --user <name>   (the names: pcldb user list)", out)
+        if str(admin_file) in removed:
+            _say("The dump has no user \"%s\" that is switched on, so no token was saved in "
+                 "its place." % SETUP_ADMIN_NAME, out)
+        _say("Other tokens of the dump work again wherever a copy of them was kept. To make a "
+             "new token: %s token new --user <name>   (the names: %s user list)"
+             % (util.LAUNCHER, util.LAUNCHER), out)
     left_out = sum(result["skipped"].values())
     if left_out:
         _say("Users and tokens were left out (%d rows). The users of this database stay as "
@@ -579,7 +627,7 @@ def _remove_token_files(settings, hashes):
     from . import auth
     wanted = set(hashes)
     var_dir = settings.var_dir
-    paths = [var_dir / "admin_token.txt"]
+    paths = [var_dir / ADMIN_TOKEN_FILE]
     try:
         paths += sorted(path for path in (var_dir / auth.TOKEN_FOLDER).iterdir()
                         if path.suffix == ".txt" and path.is_file())
@@ -603,7 +651,7 @@ def _remove_token_files(settings, hashes):
 def cmd_export_sqlite(args, settings, *, out=None):
     """`pcldb export-sqlite FILE`: the catalogue as one SQLite file. Returns 0."""
     from .store import open_store
-    path = _file_argument(args, "pcldb export-sqlite pcl_catalog_export.sqlite")
+    path = _file_argument(args, util.LAUNCHER + " export-sqlite pcl_catalog_export.sqlite")
     result = export_sqlite(open_store(settings), path)
     tables = result["tables"]
     _say("Wrote %s (%d bytes): the catalogue as one SQLite file." % (path, result["bytes"]), out)

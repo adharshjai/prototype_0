@@ -20,14 +20,17 @@ What the rules recognise, in this order (each rule uses up the words it understo
 3. "sample 130", "samples VS-001 and VS-002";
 4. how many and in which order: "top 5", "last 3 sessions", "the latest session", newest,
    oldest, largest, smallest;
-5. review words ("need review", "unreviewed", "reviewed") and other words with a fixed
+5. review words ("need review", "unreviewed", "reviewed"; a negation before one gives the
+   other state: "don't need review" are the reviewed ones) and other words with a fixed
    meaning: simulated / real, failed / partial / complete / incomplete, corrected, with or
    without problems, classified / unclassified, withdrawn, copies;
 6. values the dictionary knows (instruments, labels, methods, tags, models, sample ids,
    locations), also
-   typed with spaces for `_` or `-` and in any letter case; "not", "without", "except",
-   "other than" or "everything but" before one turns it into an exclusion ("haven't" is read
-   as "have not"); several labels joined by "and" must all be there;
+   typed with spaces for `_` or `-` and in any letter case; "not", "never", "without",
+   "except", "other than" or "everything but" before one turns it into an exclusion
+   ("haven't" is read as "have not"; "not at demo-bench-1" too); several labels joined by
+   "and" must all be there. "I can't find", "we don't see", "why can't I see" say what the
+   person looks for: that "not" excludes nothing;
 7. a loose instrument name: one part of an instrument slug ("raman" for `raman-portable`);
 8. what is left, minus stop words, becomes the keywords (every one of them must match); a
    word after a negation is left out instead (a keyword cannot exclude), with a notice.
@@ -90,9 +93,11 @@ many much count counts number total tally per
 latest newest recent recently last first oldest earliest new old past previous ago since after
 before until till between today yesterday week weeks month months year years day days hour hours
 time date dates currently now still yet ever far
+sort sorted sorting order ordered
 """.split())
 
-_NEGATIONS = frozenset({"not", "without", "except", "excluding", "exclude", "no", "non", "minus"})
+_NEGATIONS = frozenset({"not", "never", "without", "except", "excluding", "exclude", "no", "non",
+                        "minus"})
 # "but" excludes only after these words: "everything but raman", "all sessions but sem".
 _BUT_LEADS = frozenset({"everything", "anything", "all", "every"})
 # "haven't" -> "have not": contractions are spelled out before the question is cut into words.
@@ -102,11 +107,24 @@ _IRREGULAR_STEMS = {"can": "can", "won": "will", "shan": "shall"}
 _FILLERS = frozenset({"the", "a", "an", "any", "all", "that", "are", "is", "were", "was", "been",
                       "be", "being", "of", "which", "who", "have", "has", "yet", "still", "as",
                       "do", "does", "did"})
-# Words that may stand between "not" and the thing: "do not contain adenine".
+# Words that may stand between "not" and the thing: "do not contain adenine", "not at
+# demo-bench-1", "not in the sem lab". (Dates are read before values, so "not in 2025" and "in
+# the last week" have used their "in" already.)
 _LINKS = frozenset({"contain", "contains", "containing", "include", "includes", "including",
-                    "having", "with", "labelled", "labeled", "tagged", "from", "on", "using",
-                    "showing", "show", "shows", "showed", "shown", "found", "detected",
+                    "having", "with", "labelled", "labeled", "tagged", "from", "on", "at", "in",
+                    "using", "showing", "show", "shows", "showed", "shown", "found", "detected",
                     "identified", "seen", "observed", "measured", "find", "detect", "identify"})
+# "I can't find the r6g sessions", "we couldn't find r6g", "why can't I see adenine": the person
+# says what they are looking for. That "not" is about the search, never about the value.
+_PEOPLE = frozenset({"i", "we", "you"})
+_PERSONAL_AUX = frozenset({"can", "could", "do", "does", "did", "will", "would", "have", "has",
+                           "had"})
+_LOOKING_VERBS = frozenset({"find", "see", "locate", "spot", "get", "view", "open", "access",
+                            "know", "understand", "seem", "found", "seen", "located", "spotted"})
+# "I still can't find", "I have not yet found", "we really can't see": small words that may stand
+# between the person, the "not" and the verb without changing who is looking.
+_PERSONAL_ADVERBS = frozenset({"still", "just", "really", "even", "simply", "yet", "ever"})
+_CLAUSE_LEADS = frozenset({"where", "which", "that", "when", "whose", "whom", "who", "in"})
 
 _NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
                  "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "fifteen": 15,
@@ -285,6 +303,27 @@ def _spell_out_not(question):
             return _IRREGULAR_STEMS[match.group(1).lower()] + " not"
         return match.group(2) + " " + match.group(3)
     return _NOT_CONTRACTION.sub(r"\1 not", _IRREGULAR_NOT.sub(irregular, question))
+
+
+def _personal_not_rules(words):
+    """Use up the "not" of "I can't find ...", "we don't see ...", "why can't I see ...",
+    "can't you show me ...": the words that follow are what to look for. In "sessions where we
+    did not see r6g" the person describes the sessions, so that "not" stays a negation."""
+    for at in range(1, len(words)):
+        if words.word(at) != "not" or words.word(at - 1) not in _PERSONAL_AUX:
+            continue
+        if words.word(at + 1) in _PEOPLE:                   # "why can't I see", "can't you"
+            words.use(at - 1, at, at + 1)
+            continue
+        subject = at - 2
+        while words.word(subject) in _PERSONAL_ADVERBS:     # "I still can't find"
+            subject -= 1
+        verb = at + 1
+        while words.word(verb) in _PERSONAL_ADVERBS:        # "I have not yet found"
+            verb += 1
+        if (words.word(subject) in _PEOPLE and words.word(verb) in _LOOKING_VERBS
+                and words.word(subject - 1) not in _CLAUSE_LEADS):
+            words.use(*range(subject, verb + 1))
 
 
 def _atoms(text):
@@ -662,6 +701,15 @@ def _negated_after(words, last):
     return True
 
 
+def _negation_text(words, before):
+    """The negation that starts at word `before`, as the person wrote it: "not", "but",
+    "other than", "without", ..."""
+    if words.low[before] == "other" and before + 1 < len(words) \
+            and words.low[before + 1] == "than":
+        return " ".join(words.text[before:before + 2])
+    return words.text[before]
+
+
 def _negated(words, at):
     """True when a negation stands before word `at` (see `_negation_before`); the words that
     say so are used up."""
@@ -800,13 +848,19 @@ def _limit_rules(words, plan):
             plan.limit = 1
 
 
+_REVIEW_OTHER = {"pending": "done", "done": "pending"}
+
+
 def _fixed_word_rules(words, plan):
     if plan.knows("review_state"):
         for phrases, value in ((_REVIEW_PENDING, "pending"), (_REVIEW_DONE, "done")):
             for phrase in phrases:
                 for at in words.find(phrase):
                     words.use(*range(at, at + len(phrase)))
-                    plan.entries.append((at, "review_state", "any", [value]))
+                    # "sessions that don't need review" are the reviewed ones, as "not
+                    # reviewed" are the ones that wait
+                    meant = _REVIEW_OTHER[value] if _negated(words, at) else value
+                    plan.entries.append((at, "review_state", "any", [meant]))
     for at in range(len(words)):
         special = _SPECIAL.get(words.word(at))
         if special is None:
@@ -929,6 +983,7 @@ def plan_with_notices(question, dictionary, now):
         now = now.astimezone()
     words = _Words(question if isinstance(question, str) else "")
     found = _Plan(_field_names(dictionary))
+    _personal_not_rules(words)
 
     _count_rules(words, found)
     ranges = []
@@ -945,13 +1000,20 @@ def plan_with_notices(question, dictionary, now):
 
     keywords = ""
     dropped = []
+    negations = []          # the negations the dropped words came after, as written
     for at in range(len(words)):
-        if words.used[at] or words.low[at] in _STOP_WORDS:
-            continue
+        if (words.used[at] or words.low[at] in _STOP_WORDS or words.low[at] in _NEGATIONS
+                or words.low[at] in _UNUSED_NEGATIONS):
+            continue        # a negation no rule used is never a search word (see the notice)
         # A word after "not" that is no known value cannot be excluded by a keyword search:
         # searching for it would return exactly what was to be left out. It is dropped (and
         # so is a word that follows a dropped one directly: "not from the SEM lab").
-        if _negation_before(words, at) is not None or (dropped and dropped[-1][0] == at - 1):
+        before = _negation_before(words, at)
+        if before is not None or (dropped and dropped[-1][0] == at - 1):
+            if before is not None:
+                said = _negation_text(words, before)
+                if said.casefold() not in [text.casefold() for text in negations]:
+                    negations.append(said)
             dropped.append((at, words.text[at]))
             continue
         longer = (keywords + " " + words.text[at]).strip()
@@ -968,10 +1030,11 @@ def plan_with_notices(question, dictionary, now):
     notices = []
     if dropped:
         shown = " ".join(text for _, text in dropped)[:MAX_KEYWORD_CHARS]
-        notices.append('The words "%s" after a "not" were left out of the search: without the '
+        after = " and ".join('"%s"' % text for text in negations)[:MAX_KEYWORD_CHARS]
+        notices.append('The words "%s" after %s were left out of the search: without the '
                        "assistant, only known values (instruments, labels, methods, tags, "
-                       "samples, models) can be excluded. The results are not filtered by "
-                       "them." % shown)
+                       "samples, models, places) can be excluded. The results are not "
+                       "filtered by them." % (shown, after))
     else:
         left = [words.text[at] for at in range(len(words))
                 if not words.used[at] and words.low[at] in _UNUSED_NEGATIONS]

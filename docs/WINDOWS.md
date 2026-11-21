@@ -166,6 +166,13 @@ can be read only by you and the PC's administrators.
   computer's own address. If Windows asks whether to allow Python or `postgres` to communicate
   on networks, you may refuse: nothing from outside is needed. Whether the question appears at
   all for such a program is not documented by Microsoft and was not seen here.
+- **Folder rights for PostgreSQL.** PostgreSQL's programs run with reduced rights on Windows:
+  started by an administrator, they drop the administrator rights. They cannot use a folder that
+  only administrators may open, and `setup` then stops with initdb's "Permission denied" (pcldb
+  adds a sentence that says so). A folder in your own user profile (section 2) works. Such a
+  folder comes, for example, from Python 3.13 or newer run as administrator: there
+  `tempfile.mkdtemp` gives a new folder rights for SYSTEM, Administrators and its owner only.
+  pcldb's tests and `tools/smoke.py` therefore make their temporary folders without it.
 - **Antivirus.** The first `setup` with PostgreSQL makes about a thousand files and the first
   start can be slow while they are scanned; pcldb waits up to 120 seconds for PostgreSQL to
   start on Windows. When a scanner holds a file that pcldb wants to replace, pcldb tries again

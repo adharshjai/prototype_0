@@ -12,7 +12,10 @@ import argparse
 import io
 import json
 import os
+import socket
+import struct
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
@@ -218,6 +221,94 @@ class ClientWithoutServer(unittest.TestCase):
         self.assertEqual(set(made.to_dict()), ERROR_INNER_KEYS)
 
 
+def _slow_link(test, port, piece=200, pause=0.05):
+    """From here on, what this process sends TO `port` goes out `piece` bytes at a time with a
+    pause after each piece (a slow uploader's link). The server's own sockets are not slowed."""
+    send, sendall = socket.socket.send, socket.socket.sendall
+
+    def to_the_server(sock):
+        try:
+            return sock.getpeername()[1] == port
+        except OSError:
+            return False
+
+    def slow_send(sock, data, *flags):
+        if not to_the_server(sock):
+            return send(sock, data, *flags)
+        done = send(sock, bytes(memoryview(data)[:piece]), *flags)
+        time.sleep(pause)
+        return done
+
+    def slow_sendall(sock, data, *flags):
+        if not to_the_server(sock):
+            return sendall(sock, data, *flags)
+        view = memoryview(data)
+        while view:
+            view = view[slow_send(sock, view, *flags):]
+
+    for name, function in (("send", slow_send), ("sendall", slow_sendall)):
+        patch = mock.patch.object(socket.socket, name, function)
+        patch.start()
+        test.addCleanup(patch.stop)
+
+
+class ASlowUploader(support.SqliteCase, unittest.TestCase):
+    """SEC2-02, second round: the server cuts off a body that comes too slowly with 408
+    "timeout". The client must get that answer while it is still sending, not a broken pipe
+    reported as "could not be reached". (The socket timeout is 1 s here, 30 s by default.)"""
+
+    def setUp(self):
+        super().setUp()
+        with self.store.app() as db:
+            self.tokens = make_users(db)
+        self.running = RunningServer(self.settings, self.store, socket_timeout=1.0)
+        self.addCleanup(self.running.close)
+        self.url = "http://127.0.0.1:%d" % self.running.port
+
+    def test_the_408_reaches_a_client_that_is_still_sending(self):
+        client = Client(self.url, self.tokens["admin"], timeout=30)
+        _slow_link(self, self.running.port)      # about 4 KB/s: less than 16 KB per second
+        started = time.monotonic()
+        with self.assertRaises(PclError) as caught:
+            client.register({"pad": "x" * (100 * 1024)})
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual((caught.exception.status, caught.exception.code), (408, "timeout"),
+                         caught.exception.message)
+
+    def test_a_refusal_before_the_body_ends_is_that_refusal(self):
+        # A wrong token is refused at once; the client stops sending and reads the 401.
+        client = Client(self.url, "pcl_" + "z" * 43, timeout=30)
+        _slow_link(self, self.running.port)
+        with self.assertRaises(PclError) as caught:
+            client.register({"pad": "x" * (100 * 1024)})
+        self.assertEqual(caught.exception.status, 401, caught.exception.message)
+
+    def test_a_server_that_closes_while_the_body_is_sent(self):
+        # No answer at all, the connection is just reset: the message says that the server
+        # closed it while the request was being sent, not that it could not be reached.
+        listener = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(listener.close)
+
+        def rude():
+            connection, _ = listener.accept()
+            connection.recv(1024)
+            linger = struct.pack("HH" if os.name == "nt" else "ii", 1, 0)   # reset, no FIN
+            connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+            connection.close()
+
+        thread = threading.Thread(target=rude, daemon=True)
+        thread.start()
+        client = Client("http://127.0.0.1:%d" % listener.getsockname()[1], "pcl_" + "z" * 43,
+                        timeout=30)
+        with self.assertRaises(Unavailable) as caught:
+            client.register({"pad": "x" * (32 * 1024 * 1024)})
+        thread.join(10)
+        self.assertEqual(caught.exception.code, "server_closed", caught.exception.message)
+        self.assertIn("closed the connection while the request was being sent",
+                      caught.exception.message)
+        self.assertIn("var/log/server.log", caught.exception.message)
+
+
 class RegisterThroughTheServer(support.SqliteCase, unittest.TestCase):
     """`pcldb register --server URL` with the real client (not the stub of
     tests/test_registration.py): documents go through POST /api/v1/registrations."""
@@ -253,8 +344,9 @@ class RegisterThroughTheServer(support.SqliteCase, unittest.TestCase):
         self.assertEqual(lines[-1], "Total: 2 session(s): 2 created, 0 updated, 0 unchanged, "
                                     "0 refused.")
         home = self.project.path / "controller home"
-        # an upload of its own (the tree's folders carry the fixture's upload id already)
-        made = rs.write_raman_record(home, "u00000000000a")
+        # C2-01: the same upload id as the tree's raw/ copies (the fixture's own): a copy under
+        # raw/ and the upload's own place stand side by side, never "moved by hand"
+        made = rs.write_raman_record(home)
         code, lines = self.run_register(raman_uploads=str(home),
                                         scan_sessions=str(made["scan_sessions"]),
                                         token_file=str(token_file))

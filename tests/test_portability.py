@@ -610,6 +610,65 @@ class TestLineEndings(unittest.TestCase):
         self.assertNotIn(b"\r", data)
 
 
+# ---------------------------------------------------------------------- folders for a cluster
+
+# The files whose temporary folders may hold a PostgreSQL cluster, and the one function in each
+# that may make such a folder.
+CLUSTER_FOLDER_FILES = ("tests/support.py", "tests/test_end_to_end.py", "tools/smoke.py")
+TEMP_FOLDER_CALLS = ("mkdtemp", "TemporaryDirectory")
+
+
+def temp_folder_calls_outside_the_helper(path):
+    """Where `path` calls tempfile.mkdtemp or TemporaryDirectory outside make_temp_folder."""
+    found = []
+    for node in ast.walk(parse(path)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name not in TEMP_FOLDER_CALLS:
+            continue
+        inside = [parent.name for parent in ancestors(node)
+                  if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        if "make_temp_folder" not in inside:
+            found.append("%s %s" % (where(path, node), name))
+    return found
+
+
+class TestClusterFolders(unittest.TestCase):
+    """Python 3.13 and newer make tempfile.mkdtemp's folder (mode 0o700) on Windows with rights
+    for SYSTEM, Administrators and the owner only. PostgreSQL's programs run with reduced rights
+    there and cannot open anything in such a folder (initdb: Permission denied). So a folder
+    that may hold a cluster comes from make_temp_folder (os.mkdir without a mode on Windows)."""
+
+    def test_folders_that_may_hold_a_cluster_come_from_make_temp_folder(self):
+        found = []
+        for name in CLUSTER_FOLDER_FILES:
+            found += temp_folder_calls_outside_the_helper(ROOT / name)
+        self.assertEqual(found, [], "use make_temp_folder (tests/support.py, tools/smoke.py)")
+        for name in ("tests/support.py", "tools/smoke.py"):
+            helpers = [node for node in ast.walk(parse(ROOT / name))
+                       if isinstance(node, ast.FunctionDef) and node.name == "make_temp_folder"]
+            self.assertEqual(len(helpers), 1, name)
+            self.assertIn("os.mkdir(path)", ast.unparse(helpers[0]), name)
+
+    def test_the_checker_itself(self):
+        folder = ROOT / "tests"
+        sample = folder / "_portability_sample_does_not_exist.py"
+        code = ("import tempfile\n"
+                "def make_temp_folder(prefix):\n"
+                "    return tempfile.mkdtemp(prefix=prefix)\n"
+                "def other():\n"
+                "    tempfile.mkdtemp()\n"
+                "    with tempfile.TemporaryDirectory() as folder:\n"
+                "        pass\n")
+        with mock.patch.object(Path, "read_text", return_value=code):
+            found = temp_folder_calls_outside_the_helper(sample)
+        _parsed.pop(sample, None)
+        self.assertEqual(sorted(item.split(" ", 1)[1] for item in found),
+                         ["TemporaryDirectory", "mkdtemp"])
+
+
 # ---------------------------------------------------------------------- Python 3.11
 
 

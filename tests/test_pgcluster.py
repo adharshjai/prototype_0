@@ -3,6 +3,7 @@ project-local cluster (a real one, in a temporary folder with a space in its pat
 
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import stat
@@ -224,14 +225,22 @@ class TestVersionsAndEnvironment(unittest.TestCase):
         env = {"PATH": "/bin", "HOME": "/home/demo", "PGDATA": "/elsewhere", "PGPORT": "5432",
                "PGHOST": "db", "PGUSER": "postgres", "PGPASSWORD": "secret", "PGDATABASE": "x",
                "PGSERVICE": "s", "PGOPTIONS": "-c x=y", "PGPASSFILE": "/p",
-               "PGCLIENTENCODING": "LATIN1", "LANG": "de_DE.UTF-8", "PCLDB_TOKEN": "t"}
+               "PGCLIENTENCODING": "LATIN1", "LANG": "de_DE.UTF-8", "PCLDB_TOKEN": "t",
+               # What the GitHub Windows image (and the EDB installer) sets, and a name in mixed
+               # capitals (names on Windows ignore case).
+               "PGBIN": "C:\\Program Files\\PostgreSQL\\17\\bin",
+               "PGROOT": "C:\\Program Files\\PostgreSQL\\17", "PgSslRootCert": "x",
+               "pgappname": "y", "PYTHONPATH": "kept", "APGAR": "kept too"}
         for system in ("darwin", "linux", "windows"):
             child = pgcluster.child_environment(env, system)
-            self.assertEqual(sorted(name for name in child if name.startswith("PG")), [], system)
+            self.assertEqual(sorted(name for name in child if name.upper().startswith("PG")), [],
+                             system)
             self.assertEqual(child["PATH"], "/bin")
             self.assertEqual(child["LANG"], "de_DE.UTF-8")
+            self.assertEqual((child["PYTHONPATH"], child["APGAR"]), ("kept", "kept too"))
             self.assertNotIn("LC_ALL", child)
         self.assertIn("PGPASSWORD", env)        # the caller's own dict is not changed
+        self.assertIn("PGBIN", env)
 
     def test_on_a_mac_without_a_locale_lc_all_is_set(self):
         for env in ({}, {"LANG": "", "LC_ALL": ""}, {"LANG": "  "}, {"LC_CTYPE": "UTF-8"}):
@@ -514,7 +523,9 @@ class TestLocalCluster(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"PGPORT": "1", "PGDATA": str(self.project.path),
                                           "PGUSER": "nobody", "PGPASSWORD": "wrong",
-                                          "PGHOST": "192.0.2.1", "PGDATABASE": "nothing"}):
+                                          "PGHOST": "192.0.2.1", "PGDATABASE": "nothing",
+                                          "PGBIN": str(self.project.path), "PGROOT": "x",
+                                          "PgMixedCase": "y"}):
             for name in ("LANG", "LC_ALL", "LC_MESSAGES", "LC_CTYPE"):
                 os.environ.pop(name, None)      # a caller with no locale at all
             with mock.patch.object(pgcluster.subprocess, "run", recording):
@@ -540,7 +551,8 @@ class TestLocalCluster(unittest.TestCase):
             self.assertIsInstance(command, list)            # never a shell string
             self.assertFalse(options.get("shell"))
             environment = options["env"]
-            self.assertEqual([name for name in environment if name.startswith("PG")], [])
+            self.assertEqual([name for name in environment if name.upper().startswith("PG")],
+                             [])
             if sys.platform == "darwin":
                 self.assertEqual(environment.get("LC_ALL"), "en_US.UTF-8")
         self.assertTrue((self.settings.log_dir / "pg_ctl.log").stat().st_size > 0)
@@ -827,6 +839,39 @@ class TestWindowsLaunch(unittest.TestCase):
                 cluster._run(["pg_ctl", "start"], detached=True)
         self.assertEqual(seen, [0, 0])
 
+    def test_initdb_without_access_to_the_folder_says_why_on_windows(self):
+        """initdb on Windows runs with reduced rights: a folder that only administrators may
+        open (made by an administrator's program) stops it with "Permission denied"."""
+        project = support.TempProject("postgresql")
+        self.addCleanup(project.cleanup)
+        hint = "cannot use a folder that only administrators may open"
+
+        def message(system, said):
+            def stand_in_initdb(command, **options):
+                options["stdout"].write(said.encode("utf-8"))
+                return subprocess.CompletedProcess(command, 1)
+
+            cluster = LocalCluster(project.settings, test_mode=True)
+            cluster._bin = PgBin(project.path / "bin", "18.7", 18, 7, ".exe")
+            with mock.patch.object(pgcluster, "current_system", return_value=system), \
+                    mock.patch.object(pgcluster.subprocess, "run", stand_in_initdb):
+                with self.assertRaises(PclError) as caught:
+                    cluster.init()
+            self.assertEqual(caught.exception.code, "postgres_failed")
+            self.assertIn(said.strip(), str(caught.exception))
+            return str(caught.exception)
+
+        denied = ('initdb: error: could not open file "C:\\Temp\\pcldb pg x\\var\\'
+                  '.initdb-password.1234abcd.tmp" for reading: Permission denied\n')
+        text = message("windows", denied)
+        self.assertIn(hint, text)
+        self.assertIn("PostgreSQL's programs run with reduced rights", text)
+        self.assertIn("your own user profile", text)
+        self.assertTrue(text.endswith("run the command again."), text)
+        for system, said in (("darwin", denied), ("linux", denied),
+                             ("windows", "initdb: error: something else went wrong\n")):
+            self.assertNotIn(hint, message(system, said), system)
+
 
 FAILING_TESTS = """
 import unittest
@@ -969,6 +1014,81 @@ class TestSupport(unittest.TestCase):
             support.TempProject("sqlite", {"no.such": 1})
         self.assertEqual(support.free_port, util.free_port)
         self.assertIsInstance(Settings.for_test(tempfile.gettempdir()), Settings)
+
+    def test_temporary_folders_on_windows_are_made_without_a_mode(self):
+        check_temp_folder_helper(self, support.make_temp_folder,
+                                 lambda: mock.patch.object(os, "name", "nt"),
+                                 lambda: mock.patch.object(os, "name", "posix"))
+
+    def test_the_folders_that_may_hold_a_cluster_come_from_the_helper(self):
+        made = []
+
+        def recording(prefix, windows=None):
+            path = real_helper(prefix, windows)
+            made.append((prefix, path))
+            return path
+
+        real_helper = support.make_temp_folder
+        with mock.patch.object(support, "make_temp_folder", recording):
+            support.TempProject("postgresql").cleanup()
+            with mock.patch.object(support.Settings, "for_test",
+                                   side_effect=RuntimeError("stop here")):
+                with self.assertRaises(RuntimeError):
+                    support._SharedCluster()
+        self.assertEqual([prefix for prefix, _path in made], ["pcldb test ", "pcldb pg "])
+        for _prefix, path in made:
+            self.assertFalse(Path(path).exists(), path)
+
+
+def check_temp_folder_helper(case, helper, as_windows, as_elsewhere):
+    """The checks for tests/support.py's and tools/smoke.py's make_temp_folder.
+
+    Windows (Python 3.13 and newer): tempfile.mkdtemp's mode 0o700 becomes rights that only
+    SYSTEM, Administrators and the owner have, and initdb (reduced rights) is then refused. So on
+    Windows the folder is made with a plain os.mkdir(path): no mode at all."""
+    base = Path(tempfile.mkdtemp(prefix="pcldb helper "))
+    case.addCleanup(support.remove_tree, base)
+    real_mkdir = os.mkdir
+    calls = []
+
+    def recording_mkdir(path, *args, **kwargs):
+        calls.append((path, args, kwargs))
+        if len(calls) == 1:
+            raise FileExistsError(path)         # a name that is taken: the next one is tried
+        return real_mkdir(path)
+
+    def no_mkdtemp(*_args, **_kwargs):
+        raise AssertionError("tempfile.mkdtemp was used on Windows (it gives mode 0o700)")
+
+    for windows in (True, None):                # None: the helper looks at the system itself
+        calls.clear()
+        with mock.patch.object(tempfile, "gettempdir", return_value=str(base)), \
+                mock.patch.object(tempfile, "mkdtemp", no_mkdtemp), \
+                mock.patch.object(os, "mkdir", recording_mkdir), \
+                (as_windows() if windows is None else contextlib.nullcontext()):
+            text = helper("pcldb pg ", windows) if windows else helper("pcldb pg ")
+        made = Path(text)                       # (not while os.name is changed: Path follows it)
+        case.assertTrue(made.is_dir())
+        case.assertEqual(made.parent, base)
+        case.assertTrue(made.name.startswith("pcldb pg "), made.name)
+        case.assertGreaterEqual(len(made.name), len("pcldb pg ") + 8)
+        case.assertEqual(len(calls), 2)
+        for path, args, kwargs in calls:
+            case.assertEqual((args, kwargs), ((), {}), "os.mkdir got a mode")
+            case.assertTrue(os.path.basename(path).startswith("pcldb pg "))
+        case.assertEqual(calls[1][0], str(made))
+
+    # Everywhere else: tempfile.mkdtemp, as before.
+    for windows in (False, None):
+        with mock.patch.object(tempfile, "gettempdir", return_value=str(base)), \
+                (as_elsewhere() if windows is None else contextlib.nullcontext()):
+            text = helper("pcldb pg ", False) if windows is False else helper("pcldb pg ")
+        made = Path(text)
+        case.assertTrue(made.is_dir())
+        case.assertTrue(made.name.startswith("pcldb pg "), made.name)
+        if os.name != "nt":
+            case.assertEqual(stat.S_IMODE(made.stat().st_mode), 0o700)
+        support.remove_tree(made)
 
 
 if __name__ == "__main__":

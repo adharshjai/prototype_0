@@ -761,7 +761,8 @@ def load_demo(db, settings, now=None):
     if real:
         raise Conflict("The database holds %d session(s) that are not demo data. Demo data and "
                        "real data never mix, so the demo was not loaded. Use an empty database "
-                       "for the demo (pcldb db reset --yes removes everything)." % real,
+                       "for the demo (%s db reset --yes removes everything)."
+                       % (real, util.LAUNCHER),
                        code="real_data_present")
     clear_demo(db)
     with tempfile.TemporaryDirectory(prefix="pcldb-demo-", ignore_cleanup_errors=True) as folder:
@@ -828,8 +829,8 @@ def cmd_demo(args, settings, *, out=None, now=None):
     from .store import open_store
     action = getattr(args, "action", None)
     if action not in ("load", "clear"):
-        raise PclError("Say what to do with the demo data: pcldb demo load, or pcldb demo "
-                       "clear.", code="usage")
+        raise PclError("Say what to do with the demo data: %s demo load, or %s demo clear."
+                       % (util.LAUNCHER, util.LAUNCHER), code="usage")
     store = open_store(settings)
     if action == "load":
         with store.app() as db:
@@ -840,7 +841,7 @@ def cmd_demo(args, settings, *, out=None, now=None):
                 result["reviews"]), out)
         _say("Search entries waiting to be sent: %d." % result["search"]["changed"], out)
         _say("None of it is real: the folders do not exist on ARC. Remove it with: "
-             "pcldb demo clear", out)
+             "%s demo clear" % util.LAUNCHER, out)
         return 0
     with store.app() as db:
         counts = clear_demo(db)
@@ -851,5 +852,5 @@ def cmd_demo(args, settings, *, out=None, now=None):
          % (counts["sessions"], counts["files"], counts["runs"], counts["points"]), out)
     if counts["entries_to_remove"]:
         _say("%d Search entries may be in Globus Search. They are marked for removal; send "
-             "that with: pcldb search push" % counts["entries_to_remove"], out)
+             "that with: %s search push" % (counts["entries_to_remove"], util.LAUNCHER), out)
     return 0

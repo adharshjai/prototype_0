@@ -28,7 +28,16 @@ All data on this page is made up. Long values are cut and shown as `...`.
   [SECURITY.md](SECURITY.md). There are no CORS headers: other web sites cannot call the API
   from a browser.
 - **One request per connection** (HTTP/1.0). A client that stops sending is dropped after 30
-  seconds.
+  seconds. The request line and headers must be in within 30 seconds. A body may come slowly
+  but must keep coming: at least 16 KB in every 30 seconds, and all of it at 16 KB per second
+  on average (16 MB in about 17 minutes). A request that is cut off gets 408 `timeout`.
+  `pcldb.client` sends a body in pieces and looks for an answer before each piece, so it gets
+  that 408 even while it is still sending. A client that sends the whole body before it reads
+  (urllib) may only see the closed connection.
+- **A refusal reaches a client that sends the whole body first.** A 401 or 403 is decided
+  before the body is read; the server then reads the rest of the body (within the limits
+  above) and throws it away, so urllib and `pcldb.client` get the 401 or 403, not a broken
+  connection.
 - **Times** are UTC text with milliseconds, like `2026-11-20T14:30:05.120Z`, except inside
   search entries, which carry seconds (`2026-11-20T14:30:05Z`).
 
@@ -529,7 +538,9 @@ rows = client.sql("SELECT COUNT(*) AS n FROM sessions")
 ```
 
 It raises `pcldb.errors.PclError` with the server's `code`, `message` and `status`; a server
-that cannot be reached is `Unavailable`. It follows no redirects and uses no proxy, so the token
+that cannot be reached is `Unavailable` (`server_unreachable`), and one that closed the
+connection while the body was still being sent without an answer that could be read is
+`Unavailable` (`server_closed`; the server's log says why). It follows no redirects and uses no proxy, so the token
 only goes to the address you gave. `pcldb register ... --server URL` uses the same client.
 
 Never put the token into the address, a log, or the tool's source code: read it from a file or

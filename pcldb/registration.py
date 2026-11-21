@@ -559,10 +559,24 @@ def _audit(db, *, actor, path, action, source, doc_sha256, detail=None):
         "detail_json": detail})
 
 
+def _fold_character(character):
+    """One character with its letter case taken away, as a file system's table of letter pairs
+    does it: one character for one ("S" and "s"; capital sigma, sigma and final sigma), never
+    the long forms (sharp s, U+00DF, stays itself: "SS" is another name)."""
+    upper = character.upper()
+    if len(upper) != 1:
+        upper = character
+    lower = upper.lower()
+    return lower if len(lower) == 1 else upper
+
+
 def folded_path(path):
     """`path` as Windows and macOS compare names: letter case ignored, and an accented letter
-    the same whether it is one character or a letter plus an accent (NFC and NFD)."""
-    return unicodedata.normalize("NFC", path).casefold()
+    the same whether it is one character or a letter plus an accent (NFC and NFD). Every
+    character folds to one character, so two names that fold alike have the same length, and
+    the answer never depends on which of them came first."""
+    return "".join(_fold_character(character)
+                   for character in unicodedata.normalize("NFC", path))
 
 
 def _other_spelling(db, path):
@@ -661,12 +675,17 @@ def register_document(db, document, *, actor, source, settings, replace=False):
     if source != "demo" and db.scalar("SELECT value FROM {pcl}.meta WHERE key = ?",
                                       ["demo"]) == "1":
         raise Conflict("The demo data is loaded, and demo data and real data never mix, so %s "
-                       "was not registered. Remove the demo data first: pcldb demo clear"
-                       % _show(path), code="demo_loaded")
+                       "was not registered. Remove the demo data first: %s demo clear"
+                       % (_show(path), util.LAUNCHER), code="demo_loaded")
+    upload_id = (parts["upload"] or {}).get("upload_id")
     if db.engine == "postgresql":
         # Registrations of one folder (in any spelling) take turns, as they do on SQLite: the
-        # look-up below then always sees what the other one wrote.
+        # look-up below then always sees what the other one wrote. So do registrations of one
+        # upload at two places. The folder's lock always comes first, so two registrations
+        # never wait for each other in a circle.
         db.scalar("SELECT pg_advisory_xact_lock(hashtext(?))", [folded_path(path)])
+        if upload_id:
+            db.scalar("SELECT pg_advisory_xact_lock(hashtext(?))", ["upload:" + upload_id])
     existing = db.one("SELECT path, doc_sha256, withdrawn, registered_utc, registered_by, "
                       "subject, web_url, upload_json, card_json FROM {pcl}.sessions "
                       "WHERE path = ?", [path])
@@ -677,11 +696,15 @@ def register_document(db, document, *, actor, source, settings, replace=False):
     result = {"action": None, "path": path, "subject": where["subject"],
               "web_url": where["web_url"], "n_files": len(parts["files"]), "bytes": parts["bytes"]}
     # The record of one upload (its "upload" block) names one place on ARC. The same upload at
-    # another path is the same folder, moved or renamed by hand: never a second session.
-    upload_id = (parts["upload"] or {}).get("upload_id")
+    # another path, again from its record, is the same folder, moved or renamed by hand: never
+    # a second session. Only sessions registered from an upload record count: a copy of the
+    # same upload under raw/ (from a tree, a folder or an index) carries the upload id in its
+    # card, and it may stand beside the upload's own place, whichever is registered first.
     if existing is None and upload_id:
-        placed = db.one("SELECT path FROM {pcl}.sessions WHERE upload_id = ? AND path <> ?",
-                        [upload_id, path])
+        from_record = ("json_extract(upload_json, '$.upload_id')" if db.engine == "sqlite"
+                       else "upload_json ->> 'upload_id'")
+        placed = db.one("SELECT path FROM {pcl}.sessions WHERE %s = ? AND path <> ? "
+                        "ORDER BY path LIMIT 1" % from_record, [upload_id, path])
         if placed is not None:
             raise Conflict("The upload %s is registered already, as %s. Its record now names %s: "
                            "the folder was moved or renamed by hand after it was registered. "
@@ -826,7 +849,8 @@ def _read_token(args, settings):
     if not token:
         raise PclError("No token was found for the server. Put one into the variable "
                        "PCLDB_TOKEN, or give a file that holds it with --token-file (looked "
-                       "in %s). An admin makes one with: pcldb token new --user <name>" % path,
+                       "in %s). An admin makes one with: %s token new --user <name>"
+                       % (path, util.LAUNCHER),
                        code="no_token", status=401)
     return token
 
@@ -899,7 +923,7 @@ def cmd_register(args, settings, *, out=None):
         if not store.is_initialized():
             with store.app():     # raises the store's own sentence: not set up, or another version
                 pass
-            raise PclError("The database is not set up yet. Run: pcldb setup",
+            raise PclError("The database is not set up yet. Run: %s setup" % util.LAUNCHER,
                            code="not_initialized", status=503)
     counts = {"created": 0, "updated": 0, "unchanged": 0, "refused": 0}
     for label, item, source in _documents(kind, value, args, settings):

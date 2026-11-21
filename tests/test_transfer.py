@@ -237,7 +237,8 @@ class TransferCases:
     def test_restore_refuses_a_store_that_is_not_empty(self):
         transfer.dump(self.store, self.dump_path)
         error = self.assert_refused(self.store, self.dump_path, "not_empty",
-                                    ["pcl.sessions", "pcldb db reset --yes"], error=Conflict)
+                                    ["pcl.sessions", util.LAUNCHER + " db reset --yes"],
+                                    error=Conflict)
         self.assertEqual(error.status, 409)
         other, _settings, _project = new_store(self, self.engine)
         with other.app() as db:
@@ -290,9 +291,77 @@ class TransferCases:
         with fourth.app() as db:
             auth.create_user(db, "someone", "viewer")
         error = self.assert_refused(fourth, self.dump_path, "not_empty",
-                                    ["app.users", "pcldb db reset --yes"], error=Conflict,
-                                    include_users=True)
+                                    ["app.users", util.LAUNCHER + " db reset --yes"],
+                                    error=Conflict, include_users=True)
         self.assertIn("other than the admin that pcldb setup made", error.message)
+
+    def test_the_dumps_admin_gets_a_new_token_file_when_setup_wrote_over_it(self):
+        # SEC2-03 / C2-06: in one project folder, setup on the new engine writes its own admin's
+        # token over var/admin_token.txt, so the dump's admin token is in no file. restore
+        # --include-users gives the dump's admin a new token, in the same transaction, saved
+        # in var/admin_token.txt (0600), and says so.
+        from pcldb import auth, cli
+        source, source_settings, _project = new_store(self, self.engine)
+        self.assertTrue(cli.ensure_admin(source, source_settings))
+        dumps_admin_token = cli.admin_token_path(source_settings).read_text(
+            encoding="utf-8").strip()
+        with source.app() as db:
+            auth.create_user(db, "ana", "analyst")
+            ana_token = auth.issue_token(db, "ana")
+        dump_path = self.work / "with_admin.jsonl"
+        transfer.dump(source, dump_path)
+
+        target, target_settings, _project = new_store(self, self.engine)
+        self.assertTrue(cli.ensure_admin(target, target_settings))
+        admin_file = cli.admin_token_path(target_settings)
+        setup_token = admin_file.read_text(encoding="utf-8").strip()
+        out = io.StringIO()
+        args = types.SimpleNamespace(file=str(dump_path), include_users=True)
+        self.assertEqual(transfer.cmd_restore(args, target_settings, out=out), 0)
+        text = out.getvalue()
+        self.assertTrue(admin_file.is_file(), text)
+        new_token = admin_file.read_text(encoding="utf-8").strip()
+        self.assertNotIn(new_token, (setup_token, dumps_admin_token))
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(admin_file.stat().st_mode), 0o600)
+        with target.app() as db:
+            self.assertEqual(auth.authenticate(db, new_token).name, "admin")
+            self.assertIsNone(auth.authenticate(db, setup_token))
+            self.assertEqual(auth.authenticate(db, dumps_admin_token).name, "admin")
+            self.assertEqual(auth.authenticate(db, ana_token).name, "ana")
+            self.assertIn("made by pcldb restore",
+                          [row["label"] for row in auth.list_tokens(db, "admin")])
+        self.assertIn('The dump\'s user "admin" got a new token, saved in %s' % admin_file, text)
+        self.assertNotIn("where they were saved", text)
+        self.assertNotIn("were removed", text)
+        self.assertIn("%s token new --user <name>" % util.LAUNCHER, text)
+        self.assertNotIn(new_token, text)
+        self.assertTrue(text.isascii())
+
+        # A dump whose admin is switched off: no token for it; the dead file goes, and the
+        # restore says why nothing took its place.
+        with source.app() as db:
+            auth.create_user(db, "boss", "admin")
+            auth.set_disabled(db, "admin", True)
+        transfer.dump(source, dump_path)
+        fourth, fourth_settings, _project = new_store(self, self.engine)
+        cli.ensure_admin(fourth, fourth_settings)
+        fourth_file = cli.admin_token_path(fourth_settings)
+        out = io.StringIO()
+        self.assertEqual(transfer.cmd_restore(args, fourth_settings, out=out), 0)
+        text = out.getvalue()
+        self.assertFalse(fourth_file.exists())
+        self.assertIn("these files were removed: %s" % fourth_file, text)
+        self.assertIn('The dump has no user "admin" that is switched on', text)
+
+        # Without --include-users nothing about the admin changes.
+        fifth, fifth_settings, _project = new_store(self, self.engine)
+        cli.ensure_admin(fifth, fifth_settings)
+        before = cli.admin_token_path(fifth_settings).read_bytes()
+        result = transfer.restore(fifth, dump_path,
+                                  admin_token_file=cli.admin_token_path(fifth_settings))
+        self.assertIsNone(result["admin_token_file"])
+        self.assertEqual(cli.admin_token_path(fifth_settings).read_bytes(), before)
 
     def test_restore_refuses_another_schema_version_and_what_is_no_dump(self):
         transfer.dump(self.store, self.dump_path)
@@ -507,7 +576,7 @@ class TransferCases:
         self.assertIn("56 rows from 15 tables", text)
         self.assertTrue(text.isascii())
         self.assertIn("engine %s, schema version 1" % self.engine, text)
-        self.assertIn("pcldb restore", text)
+        self.assertIn(util.LAUNCHER + " restore", text)
 
         other, other_settings, _project = new_store(self, self.engine)
         out = io.StringIO()

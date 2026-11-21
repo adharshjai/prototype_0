@@ -129,6 +129,62 @@ def run_main(argv, *, env=None, settings=None):
     return code, out.getvalue(), err.getvalue()
 
 
+def switch_in_one_folder(case, new_database):
+    """SEC2-03 / C2-06: the documented switch in one project folder, from the command line:
+    setup, a user with a token, dump, change the database in pcldb_config.json
+    (`new_database`: the new "database" group), setup, restore --include-users. Checks that
+    var/admin_token.txt holds a working token of the dump's admin afterwards, and returns the
+    restore's output."""
+    from pcldb import util
+    var = case.folder / "var"
+    admin_file = var / "admin_token.txt"
+    dump_file = case.folder / "switch dump.jsonl"
+    code, out, err = case.run_cli("setup", "--engine", "sqlite")
+    case.assertEqual(code, 0, err)
+    for argv in (("user", "add", "ana", "--role", "analyst"), ("token", "new", "--user", "ana")):
+        code, out, err = case.run_cli(*argv)
+        case.assertEqual(code, 0, err)
+    ana_file = [path for path in (var / "tokens").iterdir() if path.name.startswith("ana_")][0]
+    first_admin_token = admin_file.read_text(encoding="ascii").strip()
+    code, out, err = case.run_cli("dump", str(dump_file))
+    case.assertEqual(code, 0, err)
+    case.assertIn("%s restore" % util.LAUNCHER, out)
+
+    config_path = case.folder / config.CONFIG_NAME
+    written = json.loads(config_path.read_text(encoding="utf-8"))
+    written["database"] = new_database
+    config_path.write_text(json.dumps(written), encoding="utf-8")
+    code, out, err = case.run_cli("setup")
+    case.assertEqual(code, 0, err)
+    setup_token = admin_file.read_text(encoding="ascii").strip()
+    case.assertNotEqual(setup_token, first_admin_token)     # setup wrote over the file
+
+    code, out, err = case.run_cli("restore", str(dump_file), "--include-users")
+    case.assertEqual(code, 0, err)
+    case.assert_clean(out, err)
+    case.assertIn('The dump\'s user "admin" got a new token, saved in %s' % admin_file, out)
+    case.assertNotIn("where they were saved", out)
+    case.assertIn("%s token new --user <name>" % util.LAUNCHER, out)
+    case.assertIsNone(TOKEN_SHAPE.search(out))
+    case.assertTrue(admin_file.is_file())
+    if os.name != "nt":
+        case.assertEqual(admin_file.stat().st_mode & 0o777, 0o600)
+    new_token = admin_file.read_text(encoding="ascii").strip()
+    case.assertRegex(new_token, r"\A%s\Z" % TOKEN_SHAPE.pattern)
+    case.assertNotIn(new_token, (setup_token, first_admin_token))
+    with open_store(case.loaded_settings()).app() as db:
+        case.assertEqual(auth.authenticate(db, new_token).name, "admin")
+        case.assertIsNone(auth.authenticate(db, setup_token))
+        case.assertEqual(auth.authenticate(db, first_admin_token).name, "admin")
+        ana_token = ana_file.read_text(encoding="ascii").strip()
+        case.assertEqual(auth.authenticate(db, ana_token).name, "ana")
+    # The commands that read var/admin_token.txt by themselves have a token again.
+    code, listed, err = case.run_cli("user", "list")
+    case.assertEqual(code, 0, err)
+    case.assertIn("ana", listed)
+    return out
+
+
 class TempFolderCase(unittest.TestCase):
     """A temporary project folder (with a space in its name) that holds nothing yet."""
 
@@ -388,7 +444,18 @@ class TestSetupSqlite(TempFolderCase):
         self.assertIn("Next: %s serve --open" % util.LAUNCHER, out)
         # NEW-04: without --engine the kept engine is explained, with the way to switch.
         self.assertIn("Engine: SQLite, as that file says", out)
-        self.assertIn("To switch to PostgreSQL: pcldb dump FILE", out)
+        self.assertIn("To switch to PostgreSQL: %s dump FILE, change \"database.engine\" in "
+                      "that file to \"postgresql\", %s setup, then %s restore FILE "
+                      "--include-users." % (util.LAUNCHER, util.LAUNCHER, util.LAUNCHER), out)
+        self.assertNotIn(" pcldb dump", out)
+
+    def test_the_switch_in_one_folder_keeps_a_working_admin_token_file(self):
+        # SEC2-03 / C2-06 on SQLite alone: a new, empty SQLite database in the same folder
+        # (another database.sqlite.folder) goes through the same steps as a switch of engine.
+        switch_in_one_folder(self, {"engine": "sqlite",
+                                    "sqlite": {"folder": "var/sqlite after the switch"}})
+        self.assertTrue((self.folder / "var" / "sqlite after the switch" /
+                         "pcl_app.sqlite").is_file())
 
     def test_the_users_own_folder_and_the_real_project_are_left_alone(self):
         real_var = PROJECT / "var"
@@ -417,6 +484,9 @@ class TestSetupSqlite(TempFolderCase):
         self.assertEqual(code, 1)
         self.assertIn("never changes a settings file", err)
         self.assertIn("database.engine", err)
+        from pcldb import util
+        self.assertIn("%s dump FILE before, %s restore FILE --include-users after"
+                      % (util.LAUNCHER, util.LAUNCHER), err)
         self.assert_clean(err)
         self.assertEqual(self.snapshot(), before)
         self.assertFalse((self.folder / "var" / "pgdata").exists())
@@ -832,6 +902,14 @@ class TestSetupPostgres(TempFolderCase):
         code, out, err = self.run_cli("db", "stop")
         self.assertEqual(code, 0, err)
         self.assertFalse(self.is_running())
+
+    def test_the_switch_from_sqlite_to_postgresql_keeps_a_working_admin_token_file(self):
+        # SEC2-03 / C2-06: the documented switch, SQLite to a local PostgreSQL cluster made by
+        # the second setup, in one project folder.
+        switch_in_one_folder(self, {"engine": "postgresql", "postgresql": {"port": self.port}})
+        self.assertTrue(self.is_running())
+        code, _out, err = self.run_cli("db", "stop")
+        self.assertEqual(code, 0, err)
 
 
 # ---------------------------------------------------------------------- user and token commands

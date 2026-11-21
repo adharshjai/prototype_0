@@ -100,6 +100,27 @@ CASES = [
     ("raman scans that didn't fail this month",
      expect([RAMAN, none_of("completion", "failed"),
              between("started", "2026-11-01", "2026-11-30")])),
+    # C2-02: a person who cannot find something asks for it; "was not detected" still excludes
+    ("I can't find the r6g sessions", expect([any_of("labels", "r6g")])),
+    ("we couldn't find r6g", expect([any_of("labels", "r6g")])),
+    ("I don't see the r6g runs", expect([any_of("labels", "r6g")])),
+    ("I couldn't find any adenine scans", expect([any_of("labels", "adenine")])),
+    ("why can't I see adenine sessions", expect([any_of("labels", "adenine")])),
+    ("I don't see the jeol sessions", expect([any_of("instrument", "jeol-jsm-it800-shl")])),
+    ("can't you show me adenine sessions", expect([any_of("labels", "adenine")])),
+    ("I don't know which sessions have r6g", expect([any_of("labels", "r6g")])),
+    ("r6g was not detected", expect([none_of("labels", "r6g")])),
+    ("sessions where we did not detect r6g", expect([none_of("labels", "r6g")])),
+    ("which sessions did not show methylene blue",
+     expect([none_of("labels", "methylene_blue")])),
+    ("don't show simulated sessions", expect([any_of("simulated", False)])),
+    # C2-02: a negation before a review word gives the other state
+    ("sessions that don't need review", expect([any_of("review_state", "done")])),
+    ("sessions that do not need review", expect([any_of("review_state", "done")])),
+    ("sessions never reviewed", expect([any_of("review_state", "pending")])),
+    # C2-08: "never" is a negation
+    ("sessions that never finished", expect([none_of("completion", "complete")])),
+    ("show all sessions but sort by oldest", expect(sort=OLDEST)),
     # other known values
     ("1d y scan sessions", expect([any_of("method", "1d_y_scan")])),
     ("sessions tagged calibration", expect([any_of("tags", "calibration")])),
@@ -328,6 +349,129 @@ class TestRulesDetails(unittest.TestCase):
                 plan = ask_rules.plan(question, known, NOW)
                 self.assertEqual((plan["keywords"], plan["filters"]),
                                  ("", [any_of("location", "demo-bench-1")]))
+
+    def test_a_known_location_can_be_left_out(self):
+        # C2-03: "not at <place>" and "not in <place>" exclude the place, as "not from" does.
+        known = {"values": dict(DICTIONARY["values"],
+                                location=["demo-bench-1", "demo-bench-2"])}
+        for question, place in (("sessions not at demo-bench-1", "demo-bench-1"),
+                                ("sessions that weren't at demo-bench-2", "demo-bench-2"),
+                                ("sessions that are not at demo-bench-1", "demo-bench-1"),
+                                ("sessions not in demo-bench-2", "demo-bench-2"),
+                                ("which scans aren't from demo-bench-1", "demo-bench-1")):
+            with self.subTest(question=question):
+                plan, notices = ask_rules.plan_with_notices(question, known, NOW)
+                self.assertEqual((plan["keywords"], plan["filters"], notices),
+                                 ("", [none_of("location", place)], []))
+        plan, notices = ask_rules.plan_with_notices("raman sessions not at demo bench 1",
+                                                    known, NOW)
+        self.assertEqual((plan["filters"], notices),
+                         ([RAMAN, none_of("location", "demo-bench-1")], []))
+        # "in" before a date stays the date's word
+        plan = ask_rules.plan("sessions not at demo-bench-1 in the last week", known, NOW)
+        self.assertEqual(plan["filters"], [none_of("location", "demo-bench-1"),
+                                           between("started", "2026-11-09", "2026-11-15")])
+        self.assertEqual(ask_rules.plan("adenine in the last week", known, NOW)["filters"],
+                         [any_of("labels", "adenine"),
+                          between("started", "2026-11-09", "2026-11-15")])
+        self.assertEqual(ask_rules.plan("sessions in demo-bench-1 in 2025", known, NOW)["filters"],
+                         [any_of("location", "demo-bench-1"),
+                          between("started", "2025-01-01", "2025-12-31")])
+        # a date cannot be left out: "not in 2025" keeps the year and says that "not" was not
+        # understood (as before "in" was a link word)
+        plan, notices = ask_rules.plan_with_notices("sessions not in 2025", known, NOW)
+        self.assertEqual(plan["filters"], [between("started", "2025-01-01", "2025-12-31")])
+        self.assertEqual(len(notices), 1)
+        self.assertIn('The word "not" was not understood', notices[0])
+        plan = ask_rules.plan("r6g sessions from 2026-11-01 in raman", known, NOW)
+        self.assertEqual(plan["filters"], [any_of("labels", "r6g"),
+                                           between("started", "2026-11-01", "2026-11-01"),
+                                           RAMAN])
+
+    def test_the_notice_names_the_negation_that_was_used(self):
+        # C2-08: the notice said 'after a "not"' when the question had "but" or "other than".
+        known = {"values": dict(DICTIONARY["values"], instrument=["raman-portable"])}
+        for question, said in (("everything but sem sessions", '"sem" after "but"'),
+                               ("sessions other than sem", '"sem" after "other than"'),
+                               ("anything Other Than SEM", '"SEM" after "Other Than"'),
+                               ("sessions without the SEM lab", '"SEM lab" after "without"'),
+                               ("sessions not from the SEM", '"SEM" after "not"'),
+                               ("sessions never at the SEM", '"SEM" after "never"')):
+            with self.subTest(question=question):
+                plan, notices = ask_rules.plan_with_notices(question, known, NOW)
+                self.assertEqual(plan["keywords"], "")
+                self.assertEqual(len(notices), 1)
+                self.assertIn('The words %s were left out' % said, notices[0])
+        plan, notices = ask_rules.plan_with_notices(
+            "everything but sem and not from the fluorescence lab", known, NOW)
+        self.assertIn('after "but" and "not" were left out', notices[0])
+        # "show all sessions but sort by oldest": no negation at all, and no notice
+        plan, notices = ask_rules.plan_with_notices("show all sessions but sort by oldest",
+                                                    known, NOW)
+        self.assertEqual((plan["keywords"], plan["filters"], plan["sort"], notices),
+                         ("", [], OLDEST, []))
+
+    def test_a_negation_word_is_never_a_search_word(self):
+        # C2-08: "never" stayed a keyword (and emptied the result) while the notice said it
+        # was ignored.
+        plan, notices = ask_rules.plan_with_notices("sessions that never finished", DICTIONARY,
+                                                    NOW)
+        self.assertEqual((plan["keywords"], plan["filters"], notices),
+                         ("", [none_of("completion", "complete")], []))
+        for question in ("polystyrene never", "except polystyrene", "polystyrene excluding",
+                         "never polystyrene"):
+            with self.subTest(question=question):
+                plan, notices = ask_rules.plan_with_notices(question, DICTIONARY, NOW)
+                self.assertNotIn("never", plan["keywords"].split())
+                self.assertNotIn("except", plan["keywords"].split())
+                self.assertNotIn("excluding", plan["keywords"].split())
+                self.assertEqual(len(notices), 1, notices)
+
+    def test_a_person_who_cannot_find_something_asks_for_it(self):
+        # C2-02: "can't find" was read as "not": the reply was every session but the asked ones.
+        for question in ("I can't find the r6g sessions", "we couldn't find r6g",
+                         "I don't see the r6g runs", "I cannot find r6g",
+                         "why can't I see r6g sessions", "we did not find r6g sessions"):
+            with self.subTest(question=question):
+                plan, notices = ask_rules.plan_with_notices(question, DICTIONARY, NOW)
+                self.assertEqual((plan["keywords"], plan["filters"], notices),
+                                 ("", [any_of("labels", "r6g")], []))
+        # C2-02, second round: a small word before the "not", "have" as the helper verb, and
+        # "found"/"seen" as the verb gave the opposite set.
+        for question, label in (("I still can't find methylene blue", "methylene_blue"),
+                                ("I haven't found any r6g sessions", "r6g"),
+                                ("I have not seen any adenine scans", "adenine"),
+                                ("we haven't found adenine", "adenine"),
+                                ("I have not yet found r6g", "r6g"),
+                                ("I really can't seem to find r6g", "r6g")):
+            with self.subTest(question=question):
+                plan, notices = ask_rules.plan_with_notices(question, DICTIONARY, NOW)
+                self.assertEqual((plan["filters"], notices), ([any_of("labels", label)], []))
+        # describing sessions is still a negation
+        for question in ("r6g was not detected", "sessions where r6g was not found",
+                         "sessions where we did not find r6g", "runs that did not find r6g",
+                         "sessions in which we didn't detect r6g",
+                         "sessions where we haven't found r6g",
+                         "sessions in which we still have not seen r6g",
+                         "runs that have not found r6g"):
+            with self.subTest(question=question):
+                self.assertEqual(ask_rules.plan(question, DICTIONARY, NOW)["filters"],
+                                 [none_of("labels", "r6g")])
+
+    def test_a_negated_review_word_gives_the_other_state(self):
+        # C2-02: "don't need review" gave the sessions that DO need review.
+        for question, state in (("sessions that don't need review", "done"),
+                                ("sessions that do not need review", "done"),
+                                ("which sessions don't need to be reviewed", "done"),
+                                ("sessions that are not unreviewed", "done"),
+                                ("sessions that need review", "pending"),
+                                ("sessions that were not reviewed", "pending"),
+                                ("sessions not reviewed yet", "pending"),
+                                ("reviewed sessions", "done")):
+            with self.subTest(question=question):
+                plan, notices = ask_rules.plan_with_notices(question, DICTIONARY, NOW)
+                self.assertEqual((plan["filters"], notices),
+                                 ([any_of("review_state", state)], []))
 
     def test_a_negated_word_that_is_no_known_value_is_left_out_with_a_notice(self):
         # COR-03: "not from the SEM" must never become a search FOR "SEM".

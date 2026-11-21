@@ -11,11 +11,12 @@ import json
 import sys
 import tempfile
 import types
+import unicodedata
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from pcldb import adapters_raman, registration, search_entries, sources
+from pcldb import adapters_raman, registration, search_entries, sources, util
 from pcldb.config import Settings
 from pcldb.errors import Conflict, PclError, Unavailable
 from tests import registry_support as rs
@@ -792,6 +793,89 @@ class RegistrationCases(StoreHelpers):
             self.assertEqual(registration.windows_name_problem(name),
                              "is a device name on Windows", name)
 
+    def _upload_documents(self, folder, upload_id):
+        """One upload as its record registers it (raman_globus_upload/..., with the upload
+        block) and as a tree registers its raw/ copy (the card's upload id, no block)."""
+        card = rs.make_card(session=folder, upload_id=upload_id)
+        placed = rs.make_document(path="raman_globus_upload/simulated/" + folder, card=card,
+                                  upload=rs.make_upload(upload_id=upload_id))
+        raw_copy = rs.make_document(path="raw/raman-portable/simulated/" + folder, card=card)
+        return placed, raw_copy
+
+    def test_a_raw_copy_and_the_upload_itself_stand_side_by_side_in_either_order(self):
+        # C2-01: the raw/ copy of an upload, registered first, made the upload's own record
+        # "moved by hand"; in the other order both were registered.
+        first_placed, first_copy = self._upload_documents("1d_y_scan_20261116_225015_001",
+                                                          "u00000000001a")
+        second_placed, second_copy = self._upload_documents("1d_y_scan_20261116_225015_002",
+                                                            "u00000000002a")
+        answers = [self.register_audited(document)["action"]
+                   for document in (first_copy, first_placed, second_placed, second_copy)]
+        self.assertEqual(answers, ["created"] * 4)
+        for upload_id in ("u00000000001a", "u00000000002a"):
+            self.assertEqual(len(self.query("SELECT path FROM {pcl}.sessions WHERE upload_id = ?",
+                                            [upload_id])), 2)
+        # The same record at a third place is still a folder moved by hand, in either order.
+        for folder, upload_id in (("1d_y_scan_20261116_225015_001", "u00000000001a"),
+                                  ("1d_y_scan_20261116_225015_002", "u00000000002a")):
+            moved = rs.make_document(path="test_folder_moved/simulated/" + folder,
+                                     card=rs.make_card(session=folder, upload_id=upload_id),
+                                     upload=rs.make_upload(upload_id=upload_id))
+            with self.assertRaises(Conflict) as caught:
+                self.register_audited(moved)
+            self.assertEqual(caught.exception.code, "upload_moved")
+            self.assertEqual(caught.exception.details,
+                             {"registered_path": "raman_globus_upload/simulated/" + folder})
+        self.assertEqual(self.counts()["{pcl}.sessions"], 4)
+
+    def test_one_upload_at_two_places_at_the_same_moment(self):
+        # C2-04: on PostgreSQL both registrations were created; SQLite refused the second.
+        for number in range(6):
+            upload_id = "u%012x" % (0xabc000 + number)
+            folder = "1d_y_scan_20261116_2250%02d_%03d" % (number, number)
+            card = rs.make_card(session=folder, upload_id=upload_id)
+            documents = [rs.make_document(path=path, card=card,
+                                          upload=rs.make_upload(upload_id=upload_id))
+                         for path in ("raman_globus_upload/simulated/" + folder,
+                                      "raw/raman-portable/simulated/" + folder)]
+            with self.subTest(upload_id=upload_id):
+                self.assertEqual(self._race(documents), ["created", "upload_moved"])
+
+    def test_letter_case_folds_one_character_at_a_time(self):
+        # C2-05: "Straße" and "STRASSE" are two names on Windows and macOS. They were one
+        # folder when "STRASSE" came first and two in the other order.
+        for first, second in (("lab/STRASSE_1", "lab/Straße_1"),
+                              ("lab/Straße_2", "lab/STRASSE_2")):
+            with self.subTest(first=first):
+                self.assertEqual(self.register_audited(self._race_document_at(first))["action"],
+                                 "created")
+                self.assertEqual(self.register_audited(self._race_document_at(second))["action"],
+                                 "created")
+        # Names that differ only in letter case stay one folder in both orders, also outside
+        # ASCII: "STRAßE" and "straße", and the Greek sigma in its three forms.
+        for first, second in (("lab/STRAßE_3", "lab/straße_3"),
+                              ("lab/straße_4", "lab/STRAßE_4"),
+                              ("lab/ΟΔΟΣ_5", "lab/οδος_5"),
+                              ("lab/οδος_6", "lab/ΟΔΟΣ_6"),
+                              ("lab/οδοσ_7", "lab/οδος_7")):
+            with self.subTest(first=first):
+                self.assertEqual(self.register_audited(self._race_document_at(first))["action"],
+                                 "created")
+                with self.assertRaises(Conflict) as caught:
+                    self.register_audited(self._race_document_at(second))
+                self.assertEqual(caught.exception.code, "case_conflict")
+                self.assertEqual(caught.exception.details, {"registered_path": first})
+        self.assertEqual(registration.folded_path("Straße"), "straße")
+        self.assertEqual(registration.folded_path("STRASSE"), "strasse")
+        for text in ("Straße", "İstanbul", "café", "ＡK"):
+            self.assertEqual(len(registration.folded_path(text)),
+                             len(unicodedata.normalize("NFC", text)), text)
+
+    def _race_document_at(self, path):
+        card = rs.make_card()
+        card["session"] = "x_1"
+        return rs.make_document(path=path, card=card)
+
     def test_a_registration_is_refused_while_the_demo_is_loaded(self):
         # NEW-03 / COR-10: demo data and real data never mix (as load-index already says).
         with self.store.app() as db:
@@ -799,7 +883,7 @@ class RegistrationCases(StoreHelpers):
         with self.assertRaises(Conflict) as caught:
             self.register_audited()
         self.assertEqual(caught.exception.code, "demo_loaded")
-        self.assertIn("pcldb demo clear", caught.exception.message)
+        self.assertIn(util.LAUNCHER + " demo clear", caught.exception.message)
         self.assertIsNone(self.session())
         with self.store.app() as db:
             db.upsert("pcl.meta", {"key": "demo", "value": "0"}, key=("key",))
@@ -1442,6 +1526,34 @@ class CommandCases(StoreHelpers):
         self.assertEqual([row["path"] for row in self.query(
             "SELECT path FROM {pcl}.sessions WHERE upload_id = ?", ["u00000000000a"])],
             ["raman_globus_upload/simulated/" + rs.DEMO_SESSION])
+
+    def test_a_tree_and_the_raman_uploads_of_one_upload_in_either_order(self):
+        # C2-01: tree first, then the upload's record, was refused as "moved by hand"; the
+        # other order registered both. Both orders now register both.
+        tree = self.work() / "tree_first"
+        rs.write_tree(tree, [("raman-portable", True, rs.DEMO_SESSION)])     # DEMO_UPLOAD_ID
+        code, lines = self.run_command(tree=str(tree))
+        self.assertEqual(code, 0, lines)
+        home = self.work() / "controller_second"
+        rs.write_raman_record(home)                                           # DEMO_UPLOAD_ID
+        code, lines = self.run_command(raman_uploads=str(home))
+        self.assertEqual(code, 0, lines)
+        self.assertTrue(lines[0].startswith("created    raman_globus_upload/simulated/"), lines)
+
+        folder = "1d_y_scan_20261117_100000_000"
+        home = self.work() / "controller_first"
+        rs.write_raman_record(home, "u00000000000b", folder=folder)
+        code, lines = self.run_command(raman_uploads=str(home))
+        self.assertEqual(code, 0, lines)
+        tree = self.work() / "tree_second"
+        rs.write_tree(tree, [("raman-portable", True, folder,
+                              rs.make_card(session=folder, upload_id="u00000000000b"))])
+        code, lines = self.run_command(tree=str(tree))
+        self.assertEqual(code, 0, lines)
+        self.assertTrue(lines[0].startswith("created    raw/raman-portable/simulated/"), lines)
+        for upload_id in (rs.DEMO_UPLOAD_ID, "u00000000000b"):
+            self.assertEqual(len(self.query("SELECT path FROM {pcl}.sessions WHERE upload_id = ?",
+                                            [upload_id])), 2, upload_id)
 
     def test_raman_uploads_with_another_instrument_and_the_scan_sessions(self):
         home = self.work() / "controller"
