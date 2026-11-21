@@ -407,12 +407,28 @@
     return textOf(backend) || 'not stated';
   }
 
+  // The few words above the results: "4 sessions", "10 of 23 sessions", "No sessions matched".
   function countLine(count, total) {
     const shown = typeof count === 'number' && count > 0 ? count : 0;
     const all = typeof total === 'number' && total > shown ? total : shown;
-    if (all === 0) return 'No sessions matched.';
-    if (shown === 0) return all + ' ' + plural(all, 'session', 'sessions') + ' matched, but none is listed here.';
-    return 'Showing ' + shown + ' of ' + all + ' ' + plural(all, 'session', 'sessions');
+    if (all === 0) return 'No sessions matched';
+    if (shown === 0) return all + ' ' + plural(all, 'session', 'sessions') + ' matched, but none is listed here';
+    if (shown < all) return shown + ' of ' + all + ' sessions';
+    return all + ' ' + plural(all, 'session', 'sessions');
+  }
+
+  // The first letter or digit of a name, for the round mark in the header ('?' when it has none).
+  function initialOf(name) {
+    const letters = Array.from(textOf(name)).filter(function (character) {
+      return /[\p{L}\p{N}]/u.test(character);
+    });
+    return letters.length > 0 ? letters[0].toUpperCase().slice(0, 2) : '?';
+  }
+
+  // One muted line on the Status view: who the person is and which modes they may use.
+  function lanesLine(role, canSql) {
+    const modes = canSql ? 'Normal and Expert' : 'Normal only';
+    return role ? 'You are ' + role + ': ' + modes : 'You can use ' + modes;
   }
 
   // "adenine (3), r6g (2)" when the entry has counts, else the plain list of labels.
@@ -575,40 +591,68 @@
     return lookup(SOURCE_WORDS, source, textOf(source));
   }
 
-  // [a few words for the list of facts, the sentence]. Without the assistant, keyword rules read
-  // the questions and no written answer is given: each sentence that needs it says so.
+  // For each state: [kind of the coloured dot, its title, the one plain line of the card, a few
+  // words for the list of facts, the whole sentence for "Details"]. Without the assistant,
+  // keyword rules read the questions and no written answer is given: each sentence says so.
   const ASSISTANT_STATES = Object.freeze({
-    ready: ['can be reached',
+    ready: ['ok', 'Ready', 'Reads questions and writes short answers.', 'can be reached',
       'The ARC assistant can be reached. It reads each question and writes the short answer above the table.'],
-    off_vpn: ['cannot be reached: this computer is off the VT network',
+    off_vpn: ['warn', 'Off the VT network', 'Connect to the VT VPN to use it.',
+      'cannot be reached: this computer is off the VT network',
       'The ARC assistant cannot be reached now: this computer is not on the VT campus network or VPN. ' +
       'Connect to the VT VPN to use it. Until then keyword rules read the questions, and no written answer is given.'],
-    bad_key: ['the saved key was refused',
+    bad_key: ['bad', 'Key refused', 'Save a new key from llm.arc.vt.edu.', 'the saved key was refused',
       'The ARC assistant refused the key saved on this computer. Make a new key at llm.arc.vt.edu and save it ' +
       'again. Until then keyword rules read the questions, and no written answer is given.'],
-    no_key: ['no key is saved',
+    no_key: ['off', 'No key', 'Keyword rules read the questions.', 'no key is saved',
       'No ARC assistant key is saved on this computer. Keyword rules read the questions, and no written ' +
       'answer is given.'],
-    disabled: ['switched off',
+    disabled: ['off', 'Switched off', 'Keyword rules read the questions.', 'switched off',
       'The assistant is switched off in the settings. Keyword rules read the questions, and no written ' +
       'answer is given.'],
-    error: ['did not answer the last check',
+    error: ['warn', 'Not answering', 'Keyword rules read the questions for now.', 'did not answer the last check',
       'The ARC assistant did not answer the last check. While it cannot be reached, keyword rules read the ' +
       'questions and no written answer is given.'],
-    unknown: ['not checked yet',
+    unknown: ['off', 'Not checked', 'Keyword rules read the questions until it answers.', 'not checked yet',
       'The ARC assistant has not been checked yet. If it cannot be reached, keyword rules read the ' +
       'questions and no written answer is given.']
   });
 
-  // What the Status view says about the assistant: {state, short, sentence}. The settings win
-  // over the last check: switched off or no key means it is not used whatever the check said.
+  // What the Status view says about the assistant: {state, kind, title, line, short, sentence}.
+  // The settings win over the last check: switched off or no key means it is not used whatever
+  // the check said.
   function assistantWords(assistant) {
     const a = asObject(assistant);
     let state = lookup(ASSISTANT_STATES, a.state, null) ? a.state : 'unknown';
     if (a.enabled !== true) state = 'disabled';
     else if (a.key_present !== true) state = 'no_key';
     const words = ASSISTANT_STATES[state];
-    return {state: state, short: words[0], sentence: words[1]};
+    return {state: state, kind: words[0], title: words[1], line: words[2], short: words[3], sentence: words[4]};
+  }
+
+  function countOf(table, key) {
+    const value = asObject(table)[key];
+    return typeof value === 'number' && isFinite(value) && value > 0 ? value : 0;
+  }
+
+  // What the Status view says about the search: {kind, title, line}. The copy on this computer is
+  // never called Globus Search.
+  function searchState(search) {
+    const s = asObject(search);
+    if (s.backend !== 'globus') {
+      return {kind: 'ok', title: 'Local index', line: "Questions search this computer's copy of the index."};
+    }
+    const failedCount = countOf(s.entries, 'failed');
+    const waiting = countOf(s.entries, 'pending') + countOf(s.entries, 'sent') + countOf(s.entries, 'delete_pending');
+    if (failedCount > 0) {
+      return {kind: 'bad', title: 'Some not sent', line: failedCount + ' ' + plural(failedCount, 'entry', 'entries') +
+        ' could not be sent.'};
+    }
+    if (waiting > 0) {
+      return {kind: 'warn', title: 'Entries waiting', line: waiting + ' ' + plural(waiting, 'entry waits', 'entries wait') +
+        ' to be sent.'};
+    }
+    return {kind: 'ok', title: 'Globus Search', line: 'Questions are searched with Globus Search.'};
   }
 
   const ENTRY_STATES = Object.freeze([
@@ -805,7 +849,8 @@
     sessionAddress: sessionAddress, safeGlobusUrl: safeGlobusUrl, shellSafe: shellSafe,
     userNameProblem: userNameProblem, sshCommands: sshCommands, csvCell: csvCell,
     buildCsv: buildCsv, plannerLabel: plannerLabel, backendLabel: backendLabel,
-    countLine: countLine, labelsText: labelsText, needsReviewCount: needsReviewCount,
+    countLine: countLine, initialOf: initialOf, lanesLine: lanesLine, searchState: searchState,
+    labelsText: labelsText, needsReviewCount: needsReviewCount,
     completionKind: completionKind, fieldWords: fieldWords, bucketWords: bucketWords,
     timingText: timingText, reviewSentence: reviewSentence, engineName: engineName,
     engineLabel: engineLabel, sqlIdentifier: sqlIdentifier, sessionPathOfCell: sessionPathOfCell,
@@ -826,9 +871,13 @@
     const ARC_USER_KEY = 'pcldb.arc_user';
     const TAB_TITLES = {normal: 'Normal', expert: 'Expert', status: 'Status'};
     const GRID_MAX_ROWS = 2000;    // more rows than this stay out of the page (the CSV has them)
-    const CELL_CHARS = 80;         // longer cells are cut; the title attribute keeps the full text
-    const TAG_CLASSES = {ok: 'tag tag-ok', warn: 'tag tag-warn', bad: 'tag tag-bad', plain: 'tag'};
+    const CELL_CHARS = 80;
+    const REGISTRATIONS_SHOWN = 6;  // the Status view lists this many; "Show ... more" has the rest         // longer cells are cut; the title attribute keeps the full text
+    // A soft pill with a coloured dot: green, amber and red only ever mark a state.
+    const PILL_CLASSES = {ok: 'pill pill-ok', warn: 'pill pill-warn', bad: 'pill pill-bad', off: 'pill', plain: 'pill'};
     const CELL_CLASSES = {null: 'cell-null', number: 'cell-num'};
+    // The icons drawn in index.html (the hidden block #icons) that the script may copy.
+    const ICON_NAMES = ['info', 'alert', 'copy', 'external', 'download', 'database', 'search', 'spark', 'empty'];
     // How long the page waits for the backend before it gives up, in milliseconds. A question
     // can wait on the assistant for minutes; everything else is quick.
     const WAIT_MS = {ask: 300000, sql: 120000, other: 30000};
@@ -839,7 +888,7 @@
       'option', 'p', 'pre', 'section', 'span', 'summary', 'table', 'tbody', 'td', 'th', 'thead', 'time',
       'tr', 'ul', 'wbr'];
     const EL_ATTRIBUTES = ['class', 'type', 'title', 'scope', 'colspan', 'datetime', 'tabindex', 'role',
-      'hidden', 'value', 'id', 'aria-label', 'aria-live', 'aria-expanded', 'aria-controls'];
+      'hidden', 'value', 'id', 'aria-label', 'aria-live', 'aria-expanded', 'aria-controls', 'open'];
 
     const state = {
       token: null,          // the access token: kept here and by storeToken(), nowhere else
@@ -936,6 +985,27 @@
 
     function none(words) {
       return el('span', {class: 'none'}, words || '\u{2013}');
+    }
+
+    // A copy of one of the icons drawn in index.html. Only the fixed names of ICON_NAMES: no
+    // drawing is ever made from text.
+    function icon(name) {
+      if (ICON_NAMES.indexOf(name) === -1) throw new Error('index.html has no icon named "' + name + '".');
+      const copy = byId('icon-' + name).cloneNode(true);
+      copy.removeAttribute('id');
+      return copy;
+    }
+
+    // A small soft pill with a coloured dot. kind: 'ok', 'warn', 'bad', 'off' or 'plain'.
+    function pill(kind, words, title) {
+      return el('span', {class: lookup(PILL_CLASSES, kind, 'pill'), title: title || null},
+        [el('span', {class: 'dot'}), words]);
+    }
+
+    // A toggle that keeps the longer things out of sight until they are wanted.
+    function fold(summary, children, open, extraClass) {
+      return el('details', {class: 'fold' + (extraClass ? ' ' + extraClass : ''), open: Boolean(open)},
+        [el('summary', null, summary), children]);
     }
 
     // A long name or path as text that may wrap after each "/" and "_" (and nowhere odd).
@@ -1068,16 +1138,16 @@
       const problem = userNameProblem(typed);
       if (problem !== '') {
         state.arcUser = '';
-        setLine('arc-user-status', problem + ' It was not kept; the commands show ' + USER_PLACEHOLDER + '.', 'bad');
+        setLine('arc-user-status', problem + ' It was not kept.', 'bad');
         return;
       }
       state.arcUser = typed;
       const kept = keepArcUser(typed);
       if (typed === '') {
-        setLine('arc-user-status', 'Removed. The commands show ' + USER_PLACEHOLDER + '.');
+        setLine('arc-user-status', 'Removed.');
       } else {
-        setLine('arc-user-status', kept ? 'Kept in this browser. The commands now use it.'
-          : 'This browser does not keep it. The commands use it until you close this page.');
+        setLine('arc-user-status', kept ? 'Saved in this browser.'
+          : 'Used until you close this page.');
       }
     }
 
@@ -1185,10 +1255,7 @@
       show(byId('view-app'), name === 'app');
       show(byId('tabs'), name === 'app');
       show(byId('who'), name === 'app');
-      if (name !== 'app') {
-        show(byId('engine-chip'), false);
-        show(byId('demo-chip'), false);
-      }
+      if (name !== 'app') show(byId('demo-chip'), false);
     }
 
     function setBoot(text, canRetry) {
@@ -1201,8 +1268,8 @@
       const noteNode = byId('signin-note');
       setText(noteNode, note || '');
       noteNode.classList.toggle('note', !bad);
-      noteNode.classList.toggle('notice', Boolean(bad));
-      noteNode.classList.toggle('notice-bad', Boolean(bad));
+      noteNode.classList.toggle('banner', Boolean(bad));
+      noteNode.classList.toggle('banner-bad', Boolean(bad));
       document.title = 'Sign in - PCL data';
       showView('signin');
       byId('signin-token').focus();
@@ -1228,7 +1295,9 @@
       setAskBusy(false);
       setSqlBusy(false);
       byId('ask-question').value = '';
+      byId('panel-normal').classList.toggle('is-compact', false);
       clear(byId('ask-results'));
+      show(byId('ask-hint'), true);
       setLine('ask-status', '');
       byId('sql-text').value = '';
       clear(byId('sql-result'));
@@ -1246,7 +1315,7 @@
       clear(byId('status-cards'));
       clear(byId('status-registrations'));
       setLine('status-line', '');
-      ['user-name', 'user-role', 'engine-chip', 'sql-dialect', 'app-version', 'lanes-you'].forEach(function (id) {
+      ['user-name', 'user-role', 'user-initial', 'sql-dialect', 'app-version', 'lanes-you'].forEach(function (id) {
         clear(byId(id));
       });
     }
@@ -1264,18 +1333,18 @@
       const user = asObject(state.me.user);
       const engine = asObject(state.me.engine);
       const role = roleName();
-      setText(byId('user-name'), cut(textOf(user.display_name) || textOf(user.name) || 'Signed in', 60));
+      const shownName = cut(textOf(user.display_name) || textOf(user.name) || 'Signed in', 60);
+      setText(byId('user-name'), shownName);
       setText(byId('user-role'), role || 'no role');
-      setText(byId('engine-chip'), cut(engineLabel(engine), 40));
-      show(byId('engine-chip'), engineLabel(engine) !== '');
+      setText(byId('user-initial'), initialOf(shownName));
       setText(byId('sql-dialect'), engineName(engine.name) ? cut(engineName(engine.name), 30) + ' SQL' : '');
+      show(byId('sql-dialect'), engineName(engine.name) !== '');
       const maxRows = asObject(state.me.defaults).sql_max_rows;
       setText(byId('sql-limit'), typeof maxRows === 'number'
-        ? 'A query can only read. A result stops at ' + formatNumber(maxRows) + ' rows.'
-        : 'A query can only read.');
+        ? 'Read-only. Results stop at ' + formatNumber(maxRows) + ' rows.'
+        : 'Read-only.');
       show(byId('tab-expert'), can('sql'));
-      setText(byId('lanes-you'), (role ? 'Your role is ' + role + '. ' : '') +
-        (can('sql') ? 'You can use both Normal and Expert.' : 'You can use Normal. Expert needs the analyst or admin role.'));
+      setText(byId('lanes-you'), lanesLine(role, can('sql')));
       byId('ask-simulated').checked = asObject(state.me.defaults).include_simulated !== false;
       state.arcUser = readArcUser();
       byId('arc-user').value = state.arcUser;
@@ -1437,7 +1506,7 @@
       state.askRun = run;
       const includeSimulated = byId('ask-simulated').checked;
       setAskBusy(true);
-      setLine('ask-status', 'Working on it. When the assistant is busy this can take a minute or more.');
+      setLine('ask-status', 'Working on it. This can take a minute.');
       try {
         const reply = await api('POST', API.ask, {question: question, include_simulated: includeSimulated},
           {signal: run.signal, waitMs: WAIT_MS.ask});
@@ -1471,11 +1540,14 @@
       const line = countLine(results.length, total);
       const box = byId('ask-results');
       clear(box);
+      // After the first question the search box moves up and the big heading steps aside.
+      byId('panel-normal').classList.toggle('is-compact', true);
 
+      // What the backend has to say about this answer: one line each, with a mark in front.
       const notices = asArray(r.notices).map(textOf).filter(function (text) { return text !== ''; }).slice(0, 10);
       if (notices.length > 0) {
-        append(box, el('div', {class: 'notices'}, notices.map(function (text) {
-          return el('p', {class: 'notice'}, cut(text, 1000));
+        append(box, el('div', {class: 'banners'}, notices.map(function (text) {
+          return el('p', {class: 'banner'}, [icon('info'), el('span', null, cut(text, 1000))]);
         })));
       }
 
@@ -1485,7 +1557,7 @@
       const answerText = typeof r.answer === 'string' ? r.answer.trim() : '';
       if (answerText !== '' && r.answer_by === 'llm') {
         answer = el('section', {class: 'answer'}, [
-          el('p', {class: 'answer-label'}, 'Written by the ARC assistant. Check it against the table.'),
+          el('p', {class: 'answer-label'}, [icon('spark'), 'Written by the ARC assistant. Check it against the table.']),
           el('p', {class: 'answer-text'}, cut(answerText, 6000))
         ]);
       }
@@ -1493,47 +1565,54 @@
       const facets = asArray(r.facets).filter(function (facet) {
         return facet !== null && typeof facet === 'object' && !Array.isArray(facet);
       }).slice(0, 32).map(facetTable);
+      const facetBox = facets.length > 0 ? el('div', {class: 'facets'}, facets) : null;
+      // The same summary line and "Details" above the list, whether or not anything matched.
+      const interpretation = oneLine(r.interpretation);
+      const summary = el('div', {class: 'summary'}, [
+        el('p', {class: 'summary-line'}, spaced([
+          el('span', {class: 'count'}, line),
+          interpretation !== '' ? cutNode('span', {class: 'summary-what'}, interpretation, 200) : null
+        ])),
+        howSearched(r, interpretation !== '' && interpretation === textOf(r.interpretation).trim() &&
+          !clipText(interpretation, 200).clipped)
+      ]);
       if (results.length === 0) {
-        let advice = 'The sentence below shows how the question was read.';
+        let advice = 'Details shows how the question was read.';
         if (total === 0) {
           advice = includeSimulated
-            ? 'The sentence below shows how the question was read. Try other words, or a wider time span.'
-            : 'Simulated sessions were left out. Tick "Include simulated sessions" to search them too.';
+            ? 'Try other words, or a wider time span.'
+            : 'Simulated sessions were left out. Turn on "Include simulated" to search them.';
         }
         append(box, [
-          el('div', {class: 'empty'}, [el('p', {class: 'empty-title'}, line), el('p', null, advice)]),
           answer,
-          howSearched(r),
-          facets
+          summary,
+          el('div', {class: 'empty'}, [icon('empty'), el('p', {class: 'muted'}, advice)]),
+          facetBox
         ]);
       } else {
-        append(box, [
-          answer,
-          howSearched(r),
-          el('p', {class: 'count'}, line),
-          facets,
-          sessionTable(results)
-        ]);
+        append(box, [answer, summary, facetBox, sessionTable(results)]);
       }
+      // The hint about opening a session only stands under a list of sessions.
+      show(byId('ask-hint'), results.length > 0);
       setLine('ask-status', line, 'quiet');
     }
 
-    function howSearched(r) {
+    // "Details": how the question was read, where it was searched, and the exact request.
+    // inSummary: the summary line above already shows the whole reading, so it is not repeated.
+    function howSearched(r, inSummary) {
       const timing = timingText(r.timing_ms);
-      return el('section', {class: 'how'}, [
-        el('h3', null, 'How this was searched'),
-        el('p', {class: 'interpretation'},
+      return fold('Details', [
+        el('h3', {class: 'fold-title'}, 'How this was searched'),
+        inSummary ? null : el('p', {class: 'interpretation'},
           cut(textOf(r.interpretation).trim(), 1000) || 'The backend did not say how it read the question.'),
         factList([
           ['Question read by', cut(plannerLabel(r.planned_by), 60)],
           ['Searched in', cut(backendLabel(r.backend), 60)]
         ]),
-        el('details', {class: 'raw'}, [
-          el('summary', null, 'The exact request that ran'),
-          codeBlock(prettyJson(r.request) || 'The backend did not send the request.'),
-          timing ? el('p', {class: 'muted small'}, timing) : null
-        ])
-      ]);
+        el('h4', {class: 'fold-title'}, 'Exact request'),
+        codeBlock(prettyJson(r.request) || 'The backend did not send the request.'),
+        timing ? el('p', {class: 'muted small'}, timing) : null
+      ], false, 'fold-small');
     }
 
     function facetTable(facet) {
@@ -1549,8 +1628,8 @@
     }
 
     function sessionTable(results) {
-      const headings = ['Session', 'Instrument', 'Started (your time)', 'Samples', 'Labels', 'State'];
-      return scrollBox('Sessions that matched', table('sessions', headings, results.map(sessionRow)));
+      const headings = ['Session', 'Instrument', 'Started', 'Labels', 'State'];
+      return scrollBox('Sessions that matched', table('sessions', headings, results.map(sessionRow)), 'card-box');
     }
 
     function sessionRow(result) {
@@ -1569,23 +1648,19 @@
       }
       const marks = [];
       const completion = textOf(result.completion);
-      if (completion !== '') {
-        marks.push(el('span', {class: lookup(TAG_CLASSES, completionKind(completion), 'tag')}, cut(completion, 30)));
-      }
+      if (completion !== '') marks.push(pill(completionKind(completion), cut(completion, 30)));
       const review = needsReviewCount(result);
       if (review > 0) {
-        marks.push(el('span', {class: 'tag tag-warn', title: reviewSentence(result.review_state, review)},
-          'needs review (' + review + ')'));
+        marks.push(pill('warn', 'needs review (' + review + ')', reviewSentence(result.review_state, review)));
       }
       const row = el('tr', {class: path !== '' ? 'clickrow' : null}, [
-        el('th', {scope: 'row'}, el('div', {class: 'marks'}, spaced([
-          name, result.simulated === true ? el('span', {class: 'tag tag-sim'}, 'simulated') : null
+        el('th', {scope: 'row', class: 'c-name'}, el('div', {class: 'marks'}, spaced([
+          name, result.simulated === true ? el('span', {class: 'tag'}, 'simulated') : null
         ]))),
-        el('td', null, cut(result.instrument, 80) || none()),
-        el('td', null, timeNode(result.started)),
-        el('td', null, cut(listText(result.sample_ids), 200) || none()),
-        el('td', null, cut(labelsText(result), 300) || none()),
-        el('td', null, marks.length > 0 ? el('div', {class: 'marks'}, spaced(marks)) : none())
+        el('td', {class: 'c-inst'}, cut(result.instrument, 80) || none()),
+        el('td', {class: 'c-time', title: 'In your time zone'}, timeNode(result.started)),
+        el('td', {class: 'c-labels'}, cut(labelsText(result), 300) || none()),
+        el('td', {class: 'c-state'}, marks.length > 0 ? el('div', {class: 'marks'}, spaced(marks)) : none())
       ]);
       if (path !== '') {
         // A click anywhere in the row opens the session, unless the person is selecting text.
@@ -1614,7 +1689,7 @@
       append(byId('detail-title'), breakable(cut(title || 'Session', 160)));
       clear(body);
       body.setAttribute('aria-busy', 'true');
-      append(body, el('p', {class: 'muted'}, 'Loading this session...'));
+      append(body, el('p', {class: 'muted loading'}, 'Loading this session...'));
       if (!dialog.open) {
         if (typeof dialog.showModal === 'function') dialog.showModal();
         else dialog.setAttribute('open', '');
@@ -1628,7 +1703,7 @@
         if (state.detailRun !== run) return;
         if (isFailure(err) && (err.kind === 'cancelled' || err.kind === 'signedout')) return;
         clear(body);
-        append(body, el('p', {class: 'notice notice-bad'}, sentenceFor(err, 'see this session')));
+        append(body, el('p', {class: 'banner banner-bad'}, [icon('alert'), el('span', null, sentenceFor(err, 'see this session'))]));
         if (!isFailure(err)) throw err;
       } finally {
         if (state.detailRun === run) {
@@ -1672,7 +1747,7 @@
       link.className = 'btn btn-primary';
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
-      append(link, [words, el('span', {class: 'visually-hidden'}, ' (opens the Globus web app in a new tab)')]);
+      append(link, [icon('external'), words, el('span', {class: 'visually-hidden'}, ' (opens the Globus web app in a new tab)')]);
       link.href = safe;
       return link;
     }
@@ -1708,9 +1783,14 @@
     // words: what the button says; more: extra words for screen readers only.
     function copyButton(words, more, text, shownNode, statusNode, what) {
       const button = el('button', {type: 'button', class: 'btn btn-small'},
-        [words, more ? el('span', {class: 'visually-hidden'}, more) : null]);
+        [icon('copy'), words, more ? el('span', {class: 'visually-hidden'}, more) : null]);
       button.addEventListener('click', function () { copyText(text, shownNode, statusNode, what); });
       return button;
+    }
+
+    // A long path on one line, with a few muted words in front of it.
+    function pathLine(words, shown) {
+      return el('p', {class: 'path-line'}, [el('span', {class: 'muted'}, words), shown]);
     }
 
     // Normal mode: the files are reached through Globus.
@@ -1723,60 +1803,78 @@
       if (link) {
         buttons.push(link);
       } else if (webAddress !== '') {
-        notes.push(el('p', {class: 'muted'}, [
-          'The address of this session in the Globus web app is not on app.globus.org, so it is shown as text and not as a link: ',
+        notes.push(el('p', {class: 'muted small'}, [
+          'The Globus web app address is not on app.globus.org, so it is shown as text: ',
           el('code', {class: 'path'}, cut(webAddress, 2000))
         ]));
       } else {
-        notes.push(el('p', {class: 'muted'}, 'No address in the Globus web app is recorded for this session.'));
+        notes.push(el('p', {class: 'muted small'}, 'No Globus web app address is recorded.'));
       }
       if (globusAddress !== '') {
         const shown = el('code', {class: 'path'}, breakable(cut(globusAddress, 2000)));
         buttons.push(copyButton('Copy Globus address', null, globusAddress, shown, statusNode, 'address'));
-        notes.push(el('p', {class: 'arc-path'}, [el('span', {class: 'muted'}, 'Globus address: '), shown]));
+        notes.push(pathLine('Globus address: ', shown));
       }
       return el('div', {class: 'lane-actions'}, [
-        el('h4', null, 'Through Globus'), el('div', {class: 'action-row'}, buttons), notes
+        el('h4', {class: 'visually-hidden'}, 'Through Globus'),
+        buttons.length > 0 ? el('div', {class: 'action-row'}, buttons) : null,
+        notes
       ]);
     }
 
     // Expert mode: the files are reached over SSH. The commands are only written out when the
     // path, the host and the user name are plain enough to paste into a terminal as they are.
-    function sshActions(session, statusNode) {
+    function sshActions(session, statusNode, lane) {
       const arcPath = textOf(session.storage_path);
       if (arcPath === '') {
         return el('div', {class: 'lane-actions'}, [
-          el('h4', null, 'Over SSH'), el('p', {class: 'muted'}, 'No path on ARC is recorded for this session.')
+          el('h4', {class: 'visually-hidden'}, 'Over SSH'),
+          el('p', {class: 'muted small'}, 'No path on ARC is recorded for this session.')
         ]);
       }
       const shown = el('code', {class: 'path'}, breakable(cut(arcPath, 4000)));
       const parts = [
-        el('h4', null, 'Over SSH'),
+        el('h4', {class: 'visually-hidden'}, 'Over SSH'),
         el('div', {class: 'action-row'}, copyButton('Copy ARC path', null, arcPath, shown, statusNode, 'path')),
-        el('p', {class: 'arc-path'}, [el('span', {class: 'muted'}, 'ARC path: '), shown])
+        pathLine('ARC path: ', shown)
       ];
       const host = textOf(asObject(asObject(state.me).storage).ssh_host);
       const made = sshCommands(host, state.arcUser, arcPath);
       if (made === null) {
-        parts.push(el('p', {class: 'notice'}, sshCommands('host', '', arcPath) === null
+        parts.push(el('p', {class: 'banner'}, [icon('info'), el('span', null, sshCommands('host', '', arcPath) === null
           ? 'This path has unusual characters. Copy the path and quote it yourself.'
-          : 'The backend did not name a usable SSH host, so the commands are not written out here. Copy the path instead.'));
+          : 'No usable SSH host was named, so there are no commands. Copy the path instead.')]));
         return el('div', {class: 'lane-actions'}, parts);
       }
-      parts.push(el('p', {class: 'muted'}, made.placeholder
-        ? 'Put your ARC user name in place of ' + USER_PLACEHOLDER + '. To have it filled in, type it into ' +
-          '"Your ARC user name" on the Expert view, then open this session again.'
-        : 'The commands use the ARC user name ' + made.user + '.'));
-      parts.push(el('ul', {class: 'commands'}, made.commands.map(function (item) {
-        const line = el('code', {class: 'path'}, item.command);
-        return el('li', {class: 'command'}, [
-          el('span', {class: 'command-label'}, item.label),
-          el('div', {class: 'command-line'}, [
-            line, copyButton('Copy', ' the ' + item.id + ' command', item.command, line, statusNode, 'command')
-          ])
-        ]);
-      })));
+      // Opened from Expert, a button leads straight to the name field under the results.
+      let setName = null;
+      if (made.placeholder && lane === 'expert') {
+        setName = el('button', {type: 'button', class: 'btn btn-small'}, 'Set user name');
+        setName.addEventListener('click', editArcUser);
+      }
+      parts.push(fold('SSH commands', [
+        el('p', {class: 'muted small'}, made.placeholder
+          ? 'Put your ARC user name in place of ' + USER_PLACEHOLDER + ', or save it in Expert, SSH settings.'
+          : 'The commands use the ARC user name ' + made.user + '.'),
+        setName,
+        el('ul', {class: 'commands'}, made.commands.map(function (item) {
+          const line = el('code', {class: 'path'}, item.command);
+          return el('li', {class: 'command'}, [
+            el('span', {class: 'command-label'}, item.label),
+            el('div', {class: 'command-line'}, [
+              line, copyButton('Copy', ' the ' + item.id + ' command', item.command, line, statusNode, 'command')
+            ])
+          ]);
+        }))
+      ], lane === 'expert'));
       return el('div', {class: 'lane-actions'}, parts);
+    }
+
+    // Close the panel and put the focus in the ARC user name field of the Expert view.
+    function editArcUser() {
+      byId('ssh-settings').setAttribute('open', '');
+      state.detailOpener = byId('arc-user');   // afterDetailClosed() focuses it
+      closeDetail();
     }
 
     // The file actions of the mode the panel was opened from. From the Status view, which is
@@ -1785,15 +1883,15 @@
       const statusNode = el('p', {class: 'copy-status', role: 'status', 'aria-live': 'polite'});
       const blocks = [];
       if (lane !== 'expert') blocks.push(globusActions(session, statusNode));
-      if (lane === 'expert' || (lane === 'status' && can('sql'))) blocks.push(sshActions(session, statusNode));
-      return el('section', {class: 'actions'}, [el('h3', null, 'Get to the files'), blocks, statusNode]);
+      if (lane === 'expert' || (lane === 'status' && can('sql'))) blocks.push(sshActions(session, statusNode, lane));
+      return el('section', {class: 'actions'}, [el('h3', {class: 'visually-hidden'}, 'Get to the files'), blocks, statusNode]);
     }
 
     // How the session got to ARC, in words, with the stored record behind a "Show".
     function uploadValue(value) {
       if (value === null || value === undefined || value === '') return none('not recorded');
       const record = el('details', {class: 'raw'}, [
-        el('summary', null, 'Show the record as it was kept'), codeBlock(prettyJson(value))
+        el('summary', null, 'Stored record'), codeBlock(prettyJson(value))
       ]);
       const facts = uploadFacts(value);
       if (facts.length === 0) return record;
@@ -1836,22 +1934,42 @@
       group.rows.forEach(function (row) {
         append(list, [el('dt', null, cut(row.label, 80)), el('dd', null, fieldValue(row.key, row.value))]);
       });
-      return el('section', {class: 'group'}, [el('h3', null, group.title), list]);
+      return el('section', {class: 'group'}, [el('h4', null, group.title), list]);
+    }
+
+    // The few facts a person looks at first, in a tidy grid. Every field is also in "All fields".
+    function keyFacts(session) {
+      const s = session;
+      const pairs = [];
+      if (textOf(s.instrument) !== '') pairs.push(['Instrument', cut(s.instrument, 80)]);
+      if (textOf(s.started_utc) !== '') pairs.push(['Started', timeNode(s.started_utc)]);
+      if (textOf(s.method) !== '') pairs.push(['Method', cut(s.method, 80)]);
+      if (listText(s.sample_ids) !== '') pairs.push(['Samples', cut(listText(s.sample_ids), 200)]);
+      if (typeof s.items === 'number') {
+        pairs.push(['Items', formatNumber(s.items) + (typeof s.items_planned === 'number' ? ' of ' + formatNumber(s.items_planned) : '')]);
+      }
+      if (typeof s.bytes === 'number' && formatBytes(s.bytes) !== '') {
+        pairs.push(['Size', formatBytes(s.bytes) + (typeof s.n_files === 'number' ? ', ' + fileCountLine(s.n_files, s.n_files) : '')]);
+      }
+      if (pairs.length === 0) return null;
+      const list = el('dl', {class: 'keyfacts'});
+      pairs.forEach(function (pair) {
+        append(list, el('div', {class: 'keyfact'}, [el('dt', null, pair[0]), el('dd', null, pair[1])]));
+      });
+      return list;
     }
 
     function detailLabels(r) {
-      const rows = asArray(r.labels).map(asObject).slice(0, 500).map(function (item) {
-        return el('tr', null, [
-          cutNode('th', {scope: 'row'}, item.label, 120), el('td', {class: 'num'}, countText(item.count))
-        ]);
+      const items = asArray(r.labels).map(asObject).slice(0, 500).map(function (item) {
+        return el('li', {class: 'label-chip'}, [cutNode('span', null, item.label, 120), ' ', el('span', {class: 'num'}, countText(item.count))]);
       });
       const sentence = reviewSentence(r.review_state, r.n_needs_review);
       return el('section', {class: 'group'}, [
-        el('h3', null, 'Labels'),
-        rows.length > 0
-          ? smallBox(table('facet', ['Label', 'Points'], rows))
-          : el('p', {class: 'muted'}, 'This session has no labels.'),
-        sentence ? el('p', null, sentence) : null
+        el('h3', {class: 'group-title'}, 'Labels'),
+        items.length > 0
+          ? el('ul', {class: 'label-chips', 'aria-label': 'Labels and their points'}, items)
+          : el('p', {class: 'muted small'}, 'This session has no labels.'),
+        sentence ? el('p', {class: 'muted small'}, sentence) : null
       ]);
     }
 
@@ -1867,13 +1985,10 @@
           el('td', null, run.valid === true ? 'yes' : (run.valid === false ? 'no' : none()))
         ]);
       });
-      const headings = ['Run', 'Kind', 'Made (your time)', 'Model', 'Run by', 'Valid'];
-      return el('section', {class: 'group'}, [
-        el('h3', null, 'Runs'),
-        rows.length > 0
-          ? scrollBox('Runs of this session', table('plain wide', headings, rows))
-          : el('p', {class: 'muted'}, 'No run was made from this session.')
-      ]);
+      const headings = ['Run', 'Kind', 'Made', 'Model', 'Run by', 'Valid'];
+      return fold('Runs (' + rows.length + ')', rows.length > 0
+        ? scrollBox('Runs of this session', table('plain wide', headings, rows))
+        : el('p', {class: 'muted small'}, 'No run was made from this session.'));
     }
 
     function detailFiles(files) {
@@ -1890,9 +2005,8 @@
         ]);
       });
       const total = typeof f.total === 'number' ? f.total : items.length;
-      return el('section', {class: 'group'}, [
-        el('h3', null, 'Files'),
-        el('p', {class: 'count'}, fileCountLine(items.length, total)),
+      return fold('Files (' + formatNumber(total) + ')', [
+        el('p', {class: 'muted small'}, fileCountLine(items.length, total)),
         rows.length > 0 ? scrollBox('Files of this session', table('plain', ['Name', 'Size', 'SHA-256'], rows)) : null
       ]);
     }
@@ -1900,17 +2014,22 @@
     function detailContent(r, lane) {
       const session = asObject(r.session);
       const marks = [];
-      if (session.simulated === true) marks.push(el('span', {class: 'tag tag-sim'}, 'simulated'));
-      if (session.withdrawn === true) marks.push(el('span', {class: 'tag tag-bad'}, 'withdrawn'));
+      const completion = textOf(session.completion);
+      if (completion !== '') marks.push(pill(completionKind(completion), cut(completion, 30)));
+      if (session.simulated === true) marks.push(el('span', {class: 'tag'}, 'simulated'));
+      if (session.withdrawn === true) marks.push(pill('bad', 'withdrawn'));
       if (session.corrected === true) marks.push(el('span', {class: 'tag'}, 'corrected'));
       if (session.is_copy === true) marks.push(el('span', {class: 'tag'}, 'copy'));
       return [
         marks.length > 0 ? el('p', {class: 'marks'}, spaced(marks)) : null,
+        keyFacts(session),
         fileActions(session, lane),
-        groupSessionFields(session).map(fieldGroup),
         detailLabels(r),
-        detailRuns(r.runs),
-        detailFiles(r.files)
+        el('div', {class: 'folds'}, [
+          fold('All fields', groupSessionFields(session).map(fieldGroup)),
+          detailRuns(r.runs),
+          detailFiles(r.files)
+        ])
       ];
     }
 
@@ -1949,33 +2068,32 @@
       }
     }
 
-    function insertButton(name) {
+    // A name that goes into the query where the cursor is. about: its description, as a tooltip.
+    function insertButton(name, about, extraClass) {
       const shown = clipText(name, 64);
+      const words = cut(oneLine(about), 400);
       const button = el('button', {
-        type: 'button', class: 'insert', title: shown.clipped ? cut(name, 2000) : 'Put this name into the query'
+        type: 'button', class: 'insert' + (extraClass ? ' ' + extraClass : ''),
+        title: shown.clipped ? cut(name, 2000) : (words || 'Put this name into the query')
       }, shown.text);
       button.addEventListener('click', function () { insertIntoEditor(sqlIdentifier(name)); });
       return button;
     }
 
+    // One table: its name (a click puts it into the query), and a toggle that shows its columns.
     function schemaItem(object, index) {
       const name = textOf(object.name);
       const columns = asArray(object.columns).map(asObject).slice(0, 500);
       const listId = 'schema-columns-' + index;
       const columnList = el('ul', {id: listId, class: 'columns', hidden: true}, columns.map(function (column) {
-        return el('li', {class: 'column'}, [
-          spaced([
-            insertButton(textOf(column.name)),
-            el('span', {class: 'coltype'}, cut(column.type, 40)),
-            column.nullable === true ? el('span', {class: 'colnull'}, 'may be empty') : null
-          ]),
-          textOf(column.description) ? el('p', {class: 'schema-desc'}, cut(column.description, 400)) : null
-        ]);
+        return el('li', {class: 'column'}, spaced([
+          insertButton(textOf(column.name), column.description),
+          el('span', {class: 'coltype'}, cut(column.type, 40)),
+          column.nullable === true ? el('span', {class: 'colnull', title: 'May be empty'}, 'null') : null
+        ]));
       }));
-      const toggle = el('button', {type: 'button', class: 'disclose', 'aria-expanded': 'false', 'aria-controls': listId}, [
-        columns.length + ' ' + plural(columns.length, 'column', 'columns'),
-        el('span', {class: 'visually-hidden'}, ' of ' + cut(name, 64))
-      ]);
+      const toggle = el('button', {type: 'button', class: 'disclose', 'aria-expanded': 'false', 'aria-controls': listId,
+        title: 'Show the columns'}, el('span', {class: 'visually-hidden'}, 'Show columns of ' + cut(name, 64)));
       toggle.addEventListener('click', function () {
         const open = toggle.getAttribute('aria-expanded') !== 'true';
         toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -1983,10 +2101,12 @@
       });
       return el('li', {class: 'schema-object'}, [
         el('div', {class: 'schema-head'}, spaced([
-          insertButton(name), el('span', {class: 'chip'}, object.kind === 'view' ? 'view' : 'table')
+          toggle,
+          insertButton(name, object.description, 'insert-table'),
+          object.kind === 'view' ? el('span', {class: 'tag'}, 'view') : null,
+          el('span', {class: 'disclose-count', title: columns.length + ' ' + plural(columns.length, 'column', 'columns')},
+            String(columns.length))
         ])),
-        textOf(object.description) ? el('p', {class: 'schema-desc'}, cut(object.description, 400)) : null,
-        toggle,
         columnList
       ]);
     }
@@ -2024,7 +2144,7 @@
     function resetExamples(words) {
       const select = byId('sql-examples');
       while (select.options.length > 1) select.remove(select.options.length - 1);
-      setText(select.options[0], words || 'Choose one to load it');
+      setText(select.options[0], words || 'Examples');
       select.selectedIndex = 0;
     }
 
@@ -2036,13 +2156,13 @@
         state.sqlExamples = asArray(reply.examples).map(asObject).filter(function (example) {
           return typeof example.sql === 'string' && example.sql !== '';
         }).slice(0, 200);
-        resetExamples(state.sqlExamples.length > 0 ? '' : 'There are no examples');
+        resetExamples(state.sqlExamples.length > 0 ? '' : 'No examples');
         state.sqlExamples.forEach(function (example, index) {
           append(select, el('option', {value: String(index)}, cut(oneLine(example.title), 100) || 'Example ' + (index + 1)));
         });
       } catch (err) {
         // The list of tables next to it already says why the backend did not answer.
-        if (sideFailure(err, 'examples', 'see the examples')) resetExamples('The examples could not be loaded');
+        if (sideFailure(err, 'examples', 'see the examples')) resetExamples('Examples unavailable');
         if (!isFailure(err)) throw err;
       }
     }
@@ -2065,7 +2185,7 @@
         const list = byId('history-list');
         clear(list);
         items.forEach(function (item) { append(list, historyItem(item)); });
-        setLine('history-status', items.length > 0 ? '' : 'No queries yet. The ones you run are listed here.');
+        setLine('history-status', items.length > 0 ? '' : 'No queries yet.');
       } catch (err) {
         setLine('history-status', sideFailure(err, 'history', 'see earlier queries'), 'bad');
         if (!isFailure(err)) throw err;
@@ -2082,7 +2202,7 @@
       return el('li', {class: 'history-item'}, [
         button,
         el('p', {class: 'history-meta'}, [
-          timeNode(item.at_utc), ', ',
+          timeNode(item.at_utc), ' \u{b7} ',
           el('span', {class: item.ok === true ? null : 'is-bad'}, historyOutcome(item))
         ])
       ]);
@@ -2091,6 +2211,7 @@
     function setSqlBusy(busy) {
       byId('sql-run').disabled = busy;
       byId('sql-cancel').disabled = !busy;
+      show(byId('sql-cancel'), busy);
       byId('sql-result').setAttribute('aria-busy', busy ? 'true' : 'false');
       byId('sql-line').classList.toggle('is-busy', busy);
     }
@@ -2099,7 +2220,7 @@
       if (state.sqlRun) return;    // one query at a time
       const sql = byId('sql-text').value;
       if (sql.trim() === '') {
-        setLine('sql-status', 'Type a query first, or choose an example.', 'bad');
+        setLine('sql-status', 'Type a query first, or pick an example.', 'bad');
         return;
       }
       const run = new AbortController();
@@ -2190,14 +2311,14 @@
       clear(box);
       clear(byId('sql-error'));
       show(byId('sql-error'), false);
-      const download = el('button', {type: 'button', class: 'btn btn-small'}, 'Download CSV');
+      const download = el('button', {type: 'button', class: 'btn btn-small'}, [icon('download'), 'Download CSV']);
       download.addEventListener('click', downloadCsv);
-      append(box, [
+      append(box, el('div', {class: 'result-card'}, [
         el('div', {class: 'result-head'}, [el('p', {class: 'count'}, line), columns.length > 0 ? download : null]),
         columns.length > 0
           ? scrollBox('Result of the query', gridTable(columns, onPage, state.cellPaths), 'grid-box')
-          : el('p', {class: 'muted'}, 'The result has no columns.')
-      ]);
+          : el('p', {class: 'muted result-none'}, 'The result has no columns.')
+      ]));
       setLine('sql-status', line, 'quiet');
     }
 
@@ -2219,18 +2340,18 @@
       if (fromDatabase) {
         // The database's own words, kept as they came (the line with the caret needs its spaces).
         append(box, [
-          el('p', {class: 'error-title'}, sqlFailureTitle(err.code)),
+          el('p', {class: 'error-title'}, [icon('alert'), sqlFailureTitle(err.code)]),
           el('pre', {class: 'error-text', tabindex: '0'}, cut(err.message, 4000))
         ]);
         const details = err.details;
         if (details !== null && typeof details === 'object' && Object.keys(details).length > 0) {
           append(box, el('details', {class: 'raw'}, [
-            el('summary', null, 'More from the backend'),
+            el('summary', null, 'More details'),
             codeBlock(prettyJson(details))
           ]));
         }
       } else {
-        append(box, el('p', {class: 'error-title'}, sentenceFor(err, 'run SQL')));
+        append(box, el('p', {class: 'error-title'}, [icon('alert'), sentenceFor(err, 'run SQL')]));
       }
       show(box, true);
       setLine('sql-status', '');
@@ -2296,8 +2417,19 @@
       }
     }
 
-    function card(title, children) {
-      return el('section', {class: 'card'}, [el('h3', null, title), children]);
+    // One compact card: an icon, a title, a coloured dot with the state, one plain line, two or
+    // three key facts, and "Details" for everything else.
+    function statusCard(iconName, title, condition, line, facts, more) {
+      return el('section', {class: 'card status-card'}, [
+        el('div', {class: 'card-head'}, [
+          el('span', {class: 'card-icon'}, icon(iconName)),
+          el('h3', null, title),
+          pill(condition.kind, condition.title)
+        ]),
+        el('p', {class: 'card-line'}, line),
+        factList(facts),
+        fold('Details', more, false, 'fold-small')
+      ]);
     }
 
     function numberOrNone(value) {
@@ -2312,17 +2444,20 @@
           cutNode('th', {scope: 'row'}, item.instrument, 80), el('td', {class: 'num'}, numberOrNone(item.sessions))
         ]);
       });
-      return card('Database', [
+      // The pill says how the database itself is; "Demo data" is in the header and the line.
+      const line = (engine || 'The database answers.') + (d.demo === true ? ' \u{b7} demo data' : '');
+      return statusCard('database', 'Database', {kind: 'ok', title: 'Running'}, line, [
+        ['Sessions', numberOrNone(d.sessions)],
+        ['Files', numberOrNone(d.files)],
+        ['Newest session', d.newest_started_utc ? timeNode(d.newest_started_utc) : none('no start time')]
+      ], [
         el('p', null, 'The session records are kept in ' + (engine || 'a database') + (where ? ' (' + where + ')' : '') + '.'),
-        d.demo === true ? el('p', {class: 'notice'}, 'These are made-up demo sessions, not lab data.') : null,
+        d.demo === true ? el('p', null, 'These are made-up demo sessions, not lab data.') : null,
         // Only an external PostgreSQL whose expert-mode limits are weaker sends this sentence.
-        textOf(d.expert_note).trim() !== '' ? el('p', {class: 'notice'}, cut(textOf(d.expert_note).trim(), 1000)) : null,
+        textOf(d.expert_note).trim() !== '' ? el('p', {class: 'banner'}, [icon('alert'), el('span', null, cut(textOf(d.expert_note).trim(), 1000))]) : null,
         factList([
-          ['Sessions', numberOrNone(d.sessions)],
-          ['Files', numberOrNone(d.files)],
           ['Analysis runs', numberOrNone(d.runs)],
-          ['Classified points', numberOrNone(d.points)],
-          ['Newest session started', d.newest_started_utc ? timeNode(d.newest_started_utc) : none('no session has a start time')]
+          ['Classified points', numberOrNone(d.points)]
         ]),
         instruments.length > 0
           ? smallBox(table('facet', ['Instrument', 'Sessions'], instruments))
@@ -2336,16 +2471,16 @@
           cutNode('th', {scope: 'row'}, pair[0], 80), el('td', {class: 'num'}, numberOrNone(pair[1]))
         ]);
       });
-      return card('Search index', [
+      const condition = searchState(s);
+      return statusCard('search', 'Search index', condition, condition.line, [
+        ['Globus index', s.index_set === true ? 'set up' : 'not set up yet'],
+        ['Globus sign-in', s.signed_in === true ? 'signed in' : 'not signed in']
+      ], [
         el('p', null, s.backend === 'globus'
           ? 'Questions in Normal mode are searched with Globus Search, a hosted index that holds one small entry for each session.'
           : "Questions in Normal mode are searched in this computer's copy of the index. Globus Search is not in use yet."),
         el('p', null, 'Each session has one index entry. Entries reach Globus Search only after someone ' +
           'signs in to Globus on this computer and sends them.'),
-        factList([
-          ['Globus Search index', s.index_set === true ? 'set up' : 'not set up yet'],
-          ['Globus sign-in on this computer', s.signed_in === true ? 'signed in' : 'not signed in']
-        ]),
         rows.length > 0
           ? smallBox(table('facet', ['Index entries', 'Count'], rows))
           : null
@@ -2355,15 +2490,16 @@
     function assistantCard(a) {
       const words = assistantWords(a);
       const note = cut(textOf(a.note).trim(), 600);
-      return card('Assistant', [
+      return statusCard('spark', 'Assistant', words, words.line, [
+        ['Model', cut(a.model, 80) || none()],
+        ['Key saved', a.key_present === true ? 'yes' : 'no']
+      ], [
         el('p', null, words.sentence),
         el('p', null, 'The assistant works with the personal ARC key of whoever runs pcldb on this computer. ' +
           'A shared server needs an answer from ARC about keys first.'),
         factList([
           ['Right now', words.short],
-          ['Switched on', a.enabled === true ? 'yes' : 'no'],
-          ['Key saved on this computer', a.key_present === true ? 'yes' : 'no'],
-          ['Model', cut(a.model, 80) || none()]
+          ['Switched on', a.enabled === true ? 'yes' : 'no']
         ]),
         // With no key, or switched off, the sentence above says it already: no second time.
         note !== '' && words.state !== 'no_key' && words.state !== 'disabled'
@@ -2371,8 +2507,9 @@
       ]);
     }
 
+    // The newest few registrations; the others wait behind "Show ... more".
     function registrationsTable(items) {
-      if (items.length === 0) return el('p', {class: 'muted'}, 'Nothing has been registered yet.');
+      if (items.length === 0) return el('p', {class: 'muted small'}, 'Nothing has been registered yet.');
       const rows = items.map(asObject).slice(0, 200).map(function (item) {
         const path = typeof item.session_path === 'string' ? item.session_path : '';
         const shown = clipText(path, 200);
@@ -2389,13 +2526,16 @@
         return el('tr', null, [
           el('td', null, timeNode(item.at_utc)),
           el('th', {scope: 'row'}, name),
-          el('td', null, cut(actionWords(item.action), 60) || none()),
+          el('td', null, item.action === 'rejected' ? pill('bad', 'refused') : (cut(actionWords(item.action), 60) || none())),
           el('td', null, cut(sourceWords(item.source), 60) || none()),
           el('td', null, cut(item.user_name, 80) || none())
         ]);
       });
-      return scrollBox('Newest registrations',
-        table('plain wide', ['When (your time)', 'Session', 'What happened', 'From', 'By'], rows));
+      const headings = ['When', 'Session', 'What happened', 'From', 'By'];
+      const first = scrollBox('Newest registrations', table('plain wide regs', headings, rows.slice(0, REGISTRATIONS_SHOWN)), 'card-box');
+      if (rows.length <= REGISTRATIONS_SHOWN) return first;
+      return [first, fold('Show ' + (rows.length - REGISTRATIONS_SHOWN) + ' more',
+        scrollBox('Older registrations', table('plain wide regs', headings, rows.slice(REGISTRATIONS_SHOWN)), 'card-box'))];
     }
 
     function renderStatus(r) {
@@ -2424,10 +2564,17 @@
       byId('ask-cancel').addEventListener('click', cancelAsk);
       byId('ask-examples').addEventListener('click', function (event) {
         const button = event.target instanceof Element ? event.target.closest('button') : null;
-        if (!button || button.disabled) return;
-        byId('ask-question').value = button.textContent.trim();
+        // A chip shows a few words and asks the whole question written in index.html.
+        const question = button && !button.disabled ? button.getAttribute('data-question') : null;
+        if (!question) return;
+        byId('ask-question').value = question;
         runAsk();
       });
+
+      // On a wide screen the list of tables is open at the side; on a phone it starts closed.
+      if (typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 900px)').matches) {
+        byId('schema-panel').setAttribute('open', '');
+      }
 
       byId('arc-user').addEventListener('change', onArcUserChange);
       byId('schema-retry').addEventListener('click', loadSqlSide);

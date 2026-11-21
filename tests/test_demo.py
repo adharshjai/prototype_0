@@ -443,7 +443,7 @@ class DemoCases:
 
     def test_plain_questions_find_demo_sessions_with_the_keyword_rules(self):
         # K-03: questions a lab member types must find the sessions their filters describe.
-        # The first five are the website's example buttons (pcldb/web/index.html).
+        # The first five are the questions of the website's example chips (pcldb/web/index.html).
         import datetime
         from pcldb import ask
         self.load()
@@ -470,7 +470,7 @@ class DemoCases:
                       / "index.html").read_text(
             encoding="utf-8")
         for question in questions[:5]:
-            self.assertIn(">%s</button>" % question, index_html)
+            self.assertIn('data-question="%s"' % question, index_html)
         for question in questions:
             with self.subTest(question=question):
                 result = ask.answer(question, store=self.store, settings=self.settings,

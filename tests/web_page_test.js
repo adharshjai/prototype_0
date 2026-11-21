@@ -24,7 +24,10 @@ const HTML = fs.readFileSync(path.join(WEB, 'index.html'), 'utf8');
 const SAFE_TAGS = ('button caption code dd details div dl dt h3 h4 li option p pre section span summary table ' +
   'tbody td th thead time tr ul wbr').split(' ');
 const SAFE_ATTRIBUTES = ('class type title scope colspan datetime tabindex role hidden value id aria-label aria-live ' +
-  'aria-expanded aria-controls').split(' ');
+  'aria-expanded aria-controls open').split(' ');
+// The icons are drawn in index.html and only ever copied: these are all the parts a copy may have.
+const ICON_TAGS = ['svg', 'path', 'circle', 'rect'];
+const ICON_ATTRIBUTES = ['class', 'viewbox', 'aria-hidden', 'focusable', 'd', 'cx', 'cy', 'r', 'x', 'y', 'width', 'height', 'rx'];
 const FIXED_ATTRIBUTES = ['aria-busy', 'aria-current', 'open'];     // set with fixed values outside el()
 const HIDDEN = /[\u{0}-\u{8}\u{b}\u{c}\u{e}-\u{1f}\u{7f}-\u{9f}\u{ad}\u{61c}\u{200b}-\u{200f}\u{2028}-\u{202e}\u{2060}-\u{206f}\u{feff}\u{e0000}-\u{e007f}]/u;
 
@@ -148,6 +151,18 @@ class Element extends Node {
     const dialog = this;
     setImmediate(function () { dialog.dispatch('close', {}); });
   }
+  // A deep copy, as the page makes of an icon. The copy is noted so audit() can check it.
+  cloneNode(deep) {
+    const copy = new Element(this.tagName, this.browser);
+    this.attributes.forEach(function (value, name) { copy.attributes.set(name, value); });
+    if (deep) {
+      this.childNodes.forEach(function (child) {
+        attach(copy, child instanceof Text ? new Text(child.data) : child.cloneNode(true));
+      });
+    }
+    this.browser.log.cloned.push(copy);
+    return copy;
+  }
   setRangeText(text, start, end) {
     this.value = this.value.slice(0, start) + text + this.value.slice(end);
     this.selectionStart = this.selectionEnd = start + text.length;
@@ -244,7 +259,7 @@ const VOID = ['meta', 'link', 'input', 'br', 'hr', 'wbr'];
 function parseHtml(html, browser) {
   const root = new Element('#root', browser);
   const stack = [root];
-  const token = /<!--[\s\S]*?-->|<!DOCTYPE[^>]*>|<\/([a-zA-Z0-9]+)\s*>|<([a-zA-Z0-9]+)((?:\s+[^\s=>\/]+(?:\s*=\s*(?:"[^"]*"|'[^']*'))?)*)\s*\/?>|([^<]+)/g;
+  const token = /<!--[\s\S]*?-->|<!DOCTYPE[^>]*>|<\/([a-zA-Z0-9]+)\s*>|<([a-zA-Z0-9]+)((?:\s+[^\s=>\/]+(?:\s*=\s*(?:"[^"]*"|'[^']*'))?)*)\s*(\/?)>|([^<]+)/g;
   let match;
   while ((match = token.exec(html)) !== null) {
     const parent = stack[stack.length - 1];
@@ -265,9 +280,10 @@ function parseHtml(html, browser) {
       if (element.attributes.has('disabled')) element.disabled = true;
       if (element.attributes.has('value') && element.tagName !== 'option') element.value = element.attributes.get('value');
       attach(parent, element);
-      if (VOID.indexOf(element.tagName) === -1) stack.push(element);
-    } else if (match[4] !== undefined) {
-      attach(parent, new Text(match[4].replace(/\s+/g, ' ')));
+      // A drawing's parts close themselves (<path ... />); everything else waits for its end tag.
+      if (VOID.indexOf(element.tagName) === -1 && match[4] !== '/') stack.push(element);
+    } else if (match[5] !== undefined) {
+      attach(parent, new Text(match[5].replace(/\s+/g, ' ')));
     }
   }
   return root;
@@ -436,7 +452,7 @@ function open(options) {
   const o = options || {};
   const browser = {running: false};
   const log = browser.log = {created: [], attributes: [], texts: [], requests: [], addresses: [], copied: [],
-    followed: [], blobs: [], revoked: [], modal: 0, confirms: [], errors: []};
+    followed: [], blobs: [], revoked: [], modal: 0, confirms: [], errors: [], cloned: []};
   const root = parseHtml(HTML, browser);
   const windowListeners = {};
   let clock = 0;
@@ -475,6 +491,10 @@ function open(options) {
     clearInterval: function (id) { timers.delete(id); },
     getSelection: function () {
       return {toString: function () { return ''; }, removeAllRanges: function () {}, addRange: function (range) { log.selected = range.node; }};
+    },
+    // Only when a test asks for a wide screen; a page without matchMedia() must work too.
+    matchMedia: o.wide === undefined ? undefined : function (query) {
+      return {matches: o.wide === true && query === '(min-width: 900px)'};
     },
     confirm: function (words) {
       log.confirms.push(words);
@@ -694,6 +714,17 @@ function audit(browser, secrets) {
       assert.strictEqual(element[name], undefined, name + ' was set on a <' + element.tagName + '>');
     });
   });
+  // A copy of an icon: only the drawing parts index.html has, never an address, a style or a handler.
+  log.cloned.forEach(function (element) {
+    assert.ok(ICON_TAGS.indexOf(element.tagName) !== -1, 'the script copied a <' + element.tagName + '>');
+    element.attributes.forEach(function (value, name) {
+      assert.ok(ICON_ATTRIBUTES.indexOf(name) !== -1, 'a copied icon has the attribute ' + name);
+    });
+    if (element.tagName === 'svg') {
+      assert.strictEqual(element.getAttribute('aria-hidden'), 'true', 'an icon is hidden from screen readers');
+      assert.strictEqual(element.getAttribute('id'), null, 'a copied icon keeps no id');
+    }
+  });
   log.attributes.forEach(function (attribute) {
     assert.ok(SAFE_ATTRIBUTES.indexOf(attribute.name) !== -1 || FIXED_ATTRIBUTES.indexOf(attribute.name) !== -1,
       'the script set the attribute ' + attribute.name + ' on a <' + attribute.tag + '>');
@@ -733,6 +764,21 @@ function audit(browser, secrets) {
   });
 }
 
+// The text of the count above the results ("3 sessions"), or null.
+function countOn(page) {
+  const found = page.byId('ask-results').querySelectorAll('span').filter(function (span) { return span.className === 'count'; });
+  return found.length === 1 ? found[0].textContent : null;
+}
+
+// Elements of this tag below box that are not copies of the page's own icons.
+function madeFromText(page, box, tag) {
+  return box.querySelectorAll(tag).filter(function (element) {
+    let current = element;
+    while (current && current.tagName !== 'svg') current = current.parentNode;
+    return !(current && page.log.cloned.indexOf(current) !== -1);
+  });
+}
+
 const tests = [];
 function test(name, body) {
   tests.push({name: name, body: body});
@@ -767,7 +813,7 @@ test('a sign-in link: the code leaves the address before the first request, then
   assert.strictEqual(page.document.title, 'Normal - PCL data');
   assert.strictEqual(page.seen('user-name'), 'Local admin');
   assert.strictEqual(page.seen('user-role'), 'admin');
-  assert.strictEqual(page.seen('engine-chip'), 'PostgreSQL 18.7');
+  assert.strictEqual(page.seen('user-initial'), 'L', 'the round mark shows the first letter of the name');
   assert.ok(page.shown('demo-chip'), 'the status said these are demo sessions');
   assert.ok(page.shown('tab-expert'), 'an admin may use Expert');
   audit(page);
@@ -787,7 +833,7 @@ test('a sign-in link that was already used: a plain sentence and the form to pas
   assert.ok(page.shown('view-signin') && !page.shown('view-app'));
   assert.strictEqual(page.seen('signin-note'), 'That sign-in link was already used or is more than five minutes old. ' +
     'Paste your access token below, or start again with: pcldb serve --open');
-  assert.ok(page.byId('signin-note').classList.contains('notice-bad'));
+  assert.ok(page.byId('signin-note').classList.contains('banner-bad'));
   assert.strictEqual(page.window.location.hash, '');
   assert.deepStrictEqual(page.window.sessionStorage.data, {});
   assert.strictEqual(page.log.requests.length, 1, 'nothing else was asked');
@@ -853,7 +899,7 @@ test('a kept token is used on reload; when the backend answers 401 it is forgott
   assert.strictEqual(page.log.requests[0].path, '/api/v1/me');
   await page.type('ask-question', 'Which sessions have adenine?');
   await page.click(page.byId('ask-run'));
-  assert.ok(/Showing 3 of 3 sessions/.test(page.seen('ask-results')));
+  assert.strictEqual(countOn(page), '3 sessions');
   expired = true;
   await page.click(page.byId('ask-run'));
   assert.deepStrictEqual(page.window.sessionStorage.data, {}, 'the token is removed on 401');
@@ -888,7 +934,7 @@ test('Sign out forgets the token and everything the person saw', async function 
   assert.deepStrictEqual(page.window.sessionStorage.data, {});
   assert.ok(page.shown('view-signin'));
   assert.strictEqual(page.seen('signin-note'), 'You are signed out.');
-  ['sql-result', 'schema-list', 'history-list', 'status-cards', 'user-name', 'user-role', 'engine-chip'].forEach(function (id) {
+  ['sql-result', 'schema-list', 'history-list', 'status-cards', 'user-name', 'user-role', 'user-initial'].forEach(function (id) {
     assert.strictEqual(page.byId(id).textContent, '', id + ' was emptied');
   });
   assert.strictEqual(page.byId('sql-text').value, '');
@@ -912,7 +958,7 @@ test('a role without "sql": no Expert entry, a stale #expert or #sql falls back 
     assert.ok(!page.shown('panel-expert'));
     assert.strictEqual(page.log.requests.filter(function (request) { return request.path.indexOf('/api/v1/sql') === 0; }).length, 0,
       'no Expert address is ever asked for this role');
-    assert.ok(/Your role is viewer\. You can use Normal\. Expert needs the analyst or admin role\./.test(page.byId('lanes-you').textContent));
+    assert.strictEqual(page.byId('lanes-you').textContent, 'You are viewer: Normal only');
     audit(page);
   }
 });
@@ -921,7 +967,7 @@ test('the same tab, first an admin on Expert, then a viewer: Expert is gone', as
   const page = await open({token: ADMIN_TOKEN, hash: '#expert'});
   assert.ok(page.shown('panel-expert') && page.shown('tab-expert'));
   assert.strictEqual(page.document.title, 'Expert - PCL data');
-  assert.ok(/Your role is admin\. You can use both Normal and Expert\./.test(page.byId('lanes-you').textContent));
+  assert.strictEqual(page.byId('lanes-you').textContent, 'You are admin: Normal and Expert');
   await page.click(page.byId('signout'));
   assert.strictEqual(page.window.location.hash, '#expert', 'the address still names Expert');
   await page.type('signin-token', VIEWER_TOKEN);
@@ -975,19 +1021,29 @@ test('a sign-in link opened while someone is signed in: the code leaves the addr
 
 test('Normal: a question, the answer of the assistant, how it was searched, the table', async function () {
   const page = await open({token: ADMIN_TOKEN});
-  await page.click(page.button('ask-examples', 'Which sessions have adenine?'));
+  await page.click(page.button('ask-examples', 'Adenine sessions'));
   const sent = page.paths('POST /api/v1/ask')[0];
   assert.deepStrictEqual(sent.body, {question: 'Which sessions have adenine?', include_simulated: true});
   assert.deepStrictEqual(Object.keys(sent.headers).sort(), ['Accept', 'Authorization', 'Content-Type']);
   const text = page.seen('ask-results');
-  ['Written by the ARC assistant. Check it against the table.', '3 sessions match.', 'How this was searched',
+  ['Written by the ARC assistant. Check it against the table.', '3 sessions match.', 'Details', 'How this was searched',
     'Sessions where labels has adenine, newest first (up to 10).', 'Question read by assistant',
-    "Searched in this computer's copy of the index", 'The exact request that ran', 'Showing 3 of 3 sessions',
-    'Session Instrument Started (your time) Samples Labels State', 'simulated', 'UNKNOWN (4), adenine (3)',
+    "Searched in this computer's copy of the index", 'Exact request',
+    'Session Instrument Started Labels State', 'simulated', 'UNKNOWN (4), adenine (3)',
     'complete', 'needs review (1)'].forEach(function (needle) {
     assert.ok(text.indexOf(needle) !== -1, 'missing: ' + needle + '\n' + text);
   });
   assert.ok(text.indexOf('Globus Search') === -1, 'the search ran on this computer: the page must not name Globus Search');
+  assert.strictEqual(countOn(page), '3 sessions');
+  assert.ok(page.byId('panel-normal').classList.contains('is-compact'), 'after a question the search box moves up');
+  assert.strictEqual(text.split('Sessions where labels has adenine').length, 2, 'the reading is said once, not in Details again');
+  assert.ok(page.shown('ask-hint'), 'sessions are listed: the hint says how to reach their files');
+  // "How this was searched" and the exact request wait behind one closed "Details" toggle.
+  const details = page.byId('ask-results').querySelectorAll('details');
+  assert.strictEqual(details.length, 1);
+  assert.strictEqual(details[0].open, false);
+  assert.strictEqual(seen(details[0].querySelectorAll('summary')[0]), 'Details');
+  assert.ok(seen(details[0]).indexOf('How this was searched') !== -1 && details[0].querySelectorAll('pre').length === 1);
   assert.strictEqual(page.byId('ask-results').querySelectorAll('tr').length, 4);
   assert.strictEqual(page.byId('ask-results').querySelectorAll('time')[0].getAttribute('title'), '2026-11-16T03:50:15Z (UTC)');
   assert.strictEqual(page.byId('ask-run').disabled, false);
@@ -997,6 +1053,73 @@ test('Normal: a question, the answer of the assistant, how it was searched, the 
   await page.click(page.byId('ask-run'));
   assert.strictEqual(page.paths('POST /api/v1/ask')[1].body.include_simulated, false);
   audit(page);
+});
+
+test('Normal: the example chips show a few words and ask the same five questions as before', async function () {
+  const questions = ['Which sessions have adenine?', 'Show Raman sessions from the last 7 days', 'How many sessions per instrument?',
+    'Which sessions still need review?', 'Which sessions were partial or failed?'];
+  const page = await open({token: ADMIN_TOKEN});
+  const chips = page.byId('ask-examples').querySelectorAll('button');
+  assert.strictEqual(chips.length, questions.length);
+  for (let i = 0; i < chips.length; i += 1) {
+    assert.ok(seen(chips[i]).split(' ').length <= 4, 'a chip has a few words: ' + seen(chips[i]));
+    await page.click(chips[i]);
+    assert.deepStrictEqual(page.paths('POST /api/v1/ask')[i].body, {question: questions[i], include_simulated: true});
+    assert.strictEqual(page.byId('ask-question').value, questions[i], 'the whole question is in the box');
+  }
+  audit(page);
+});
+
+test('the session panel: key facts first, the long parts behind toggles, SSH commands open only from Expert', async function () {
+  const made = await openFromNormal({});
+  const body = made.page.byId('detail-body');
+  const facts = body.querySelectorAll('dl').filter(function (list) { return list.className === 'keyfacts'; });
+  assert.strictEqual(facts.length, 1);
+  assert.strictEqual(seen(facts[0]), 'Instrument raman-portable Started ' +
+    seen(facts[0].querySelectorAll('time')[0]) + ' Method 1d_y_scan Samples 130 Items 13 of 13 Size 184 kB, 2 files');
+  const folds = body.querySelectorAll('details').filter(function (node) { return node.className === 'fold'; });
+  assert.deepStrictEqual(folds.map(function (node) { return seen(node.querySelectorAll('summary')[0]); }),
+    ['All fields', 'Runs (1)', 'Files (2)']);
+  assert.ok(folds.every(function (node) { return !node.open; }), 'all of them start closed');
+  // "Open in Globus" comes first and is the main button.
+  const actions = body.querySelectorAll('section').filter(function (node) { return node.className === 'actions'; })[0];
+  const first = actions.querySelectorAll('a')[0];
+  assert.strictEqual(first.className, 'btn btn-primary');
+  audit(made.page);
+
+  const expert = await openFromExpert({});
+  const ssh = expert.page.byId('detail-body').querySelectorAll('details').filter(function (node) {
+    return seen(node.querySelectorAll('summary')[0]) === 'SSH commands';
+  });
+  assert.strictEqual(ssh.length, 1);
+  assert.strictEqual(ssh[0].open, true, 'from Expert the commands are what the person came for');
+  audit(expert.page);
+  const status = await open({token: ADMIN_TOKEN, hash: '#status'});
+  await status.click(status.button('status-registrations', 'demo_1'));
+  const closed = status.byId('detail-body').querySelectorAll('details').filter(function (node) {
+    return seen(node.querySelectorAll('summary')[0]) === 'SSH commands';
+  });
+  assert.strictEqual(closed.length, 1);
+  assert.strictEqual(closed[0].open, false);
+  audit(status);
+});
+
+test('Expert: Cancel shows only while a query runs; the list of tables starts open on a wide screen only', async function () {
+  const page = await open({token: ADMIN_TOKEN, hash: '#expert', routes: {'POST /api/v1/sql': HANG}});
+  assert.ok(!page.shown('sql-cancel'), 'nothing to cancel yet');
+  assert.strictEqual(page.byId('schema-panel').getAttribute('open'), null, 'without matchMedia it stays closed');
+  await page.type('sql-text', 'SELECT 1', 'input');
+  await page.click(page.byId('sql-run'));
+  assert.ok(page.shown('sql-cancel'));
+  await page.click(page.byId('sql-cancel'));
+  assert.ok(!page.shown('sql-cancel'));
+  audit(page);
+  const wide = await open({token: ADMIN_TOKEN, hash: '#expert', wide: true});
+  assert.strictEqual(wide.byId('schema-panel').getAttribute('open'), '');
+  const narrow = await open({token: ADMIN_TOKEN, hash: '#expert', wide: false});
+  assert.strictEqual(narrow.byId('schema-panel').getAttribute('open'), null);
+  audit(wide);
+  audit(narrow);
 });
 
 test('Normal: Globus Search named only when it ran; keyword rules; notices; counts', async function () {
@@ -1023,18 +1146,20 @@ test('Normal: nothing matched, and a count without a list', async function () {
   await page.type('ask-question', 'nothing');
   await page.click(page.byId('ask-run'));
   let text = page.seen('ask-results');
-  assert.ok(/^No sessions matched\. The sentence below shows how the question was read\. Try other words/.test(text), text);
+  // The same place as with results: the summary line and Details first, then the empty card.
+  assert.ok(/^No sessions matched Sessions where labels has adenine, newest first \(up to 10\)\. Details How this was searched .* Try other words, or a wider time span\.$/.test(text), text);
   assert.strictEqual(text.split('No sessions matched').length, 2, 'said once, not twice');
-  assert.ok(text.indexOf('How this was searched') !== -1);
+  assert.strictEqual(text.split('Sessions where labels has adenine').length, 2, 'the reading is said once, not twice');
+  assert.ok(!page.shown('ask-hint'), 'nothing to open: no hint about opening a session');
   page.byId('ask-simulated').checked = false;
   await page.click(page.byId('ask-run'));
-  assert.ok(/Simulated sessions were left out\. Tick "Include simulated sessions" to search them too\./.test(page.seen('ask-results')));
+  assert.ok(page.seen('ask-results').indexOf('Simulated sessions were left out. Turn on "Include simulated" to search them.') !== -1);
 
   const counted = await open({token: ADMIN_TOKEN, routes: {'POST /api/v1/ask': {status: 200, body: askReply({answer: null, answer_by: 'none', total: 5, count: 0, results: []})}}});
   await counted.type('ask-question', 'count');
   await counted.click(counted.byId('ask-run'));
   text = counted.seen('ask-results');
-  assert.ok(/^5 sessions matched, but none is listed here\./.test(text), text);
+  assert.ok(/^5 sessions matched, but none is listed here .*Details How this was searched .* Details shows how the question was read\.$/.test(text), text);
   assert.ok(text.indexOf('No sessions matched') === -1);
   audit(page);
   audit(counted);
@@ -1063,7 +1188,7 @@ test('Normal: a reply with nearly everything missing does not break the page', a
   await sparse.type('ask-question', 'anything');
   await sparse.click(sparse.byId('ask-run'));
   const text = sparse.seen('ask-results');
-  assert.ok(text.indexOf('Showing 3 of 3 sessions') !== -1);
+  assert.strictEqual(countOn(sparse), '3 sessions');
   assert.ok(text.indexOf('(no name)') !== -1 && text.indexOf('only_a_path') !== -1 && text.indexOf('a_folder_without_a_path') !== -1);
   assert.ok(text.indexOf('The backend did not say how it read the question.') !== -1);
   assert.strictEqual(sparse.buttons('ask-results', 'only_a_path').length, 1, 'a session with a path can be opened');
@@ -1090,10 +1215,10 @@ test('Normal: hostile text everywhere is shown as text, cut to size, with unseen
   assert.ok(text.indexOf('evil_<U+202E>gpj.exe') !== -1, 'the direction override is written out');
   assert.ok(text.indexOf(RLO) === -1);
   ['img', 'script', 'b', 'a', 'iframe', 'svg'].forEach(function (tag) {
-    assert.strictEqual(box.querySelectorAll(tag).length, 0, 'a <' + tag + '> element was made from text');
+    assert.strictEqual(madeFromText(page, box, tag).length, 0, 'a <' + tag + '> element was made from text');
   });
   assert.ok(text.length < 60000, 'about 500 kB came in, ' + text.length + ' characters are on the page');
-  assert.ok(box.querySelectorAll('p').filter(function (p) { return p.className === 'notice'; }).length <= 10);
+  assert.ok(box.querySelectorAll('p').filter(function (p) { return p.className === 'banner'; }).length <= 10);
   assert.ok(box.querySelectorAll('p').filter(function (p) { return p.className === 'answer-text'; })[0].textContent.length <= 6100);
   assert.ok(page.buttons('ask-results', 'x'.repeat(100)).every(function (button) { return button.textContent.length <= 121; }));
   audit(page);
@@ -1109,7 +1234,7 @@ test('Normal: a slow answer can be cancelled, a second click does not ask twice,
   assert.strictEqual(page.byId('ask-results').getAttribute('aria-busy'), 'true');
   assert.ok(page.byId('ask-examples').querySelectorAll('button').every(function (button) { return button.disabled; }));
   await page.click(page.byId('ask-run'));
-  await page.click(page.button('ask-examples', 'Which sessions have adenine?'));
+  await page.click(page.button('ask-examples', 'Adenine sessions'));
   assert.strictEqual(page.paths('POST /api/v1/ask').length, 1, 'one question at a time');
   await page.wait(3000);
   assert.strictEqual(page.seen('ask-elapsed'), '3 s');
@@ -1144,7 +1269,7 @@ test('Normal: the view can be left while a question runs; the answer is there on
   await page.settle();
   assert.ok(page.shown('panel-status'), 'the answer does not pull the person back');
   await page.click(page.byId('tab-normal'));
-  assert.ok(/Showing 3 of 3 sessions/.test(page.seen('ask-results')));
+  assert.strictEqual(countOn(page), '3 sessions');
   assert.strictEqual(page.byId('ask-run').disabled, false);
   audit(page);
 });
@@ -1265,11 +1390,11 @@ test('the Globus link is made only for an address on app.globus.org; anything el
     const page = made.page;
     assert.strictEqual(page.byId('detail-body').querySelectorAll('a').length, 0, 'a link was made for ' + JSON.stringify(address));
     assert.strictEqual(page.buttons('detail-body', 'Open in Globus').length, 0);
-    assert.ok(page.seen('detail-body').indexOf('is not on app.globus.org, so it is shown as text and not as a link') !== -1);
+    assert.ok(page.seen('detail-body').indexOf('The Globus web app address is not on app.globus.org, so it is shown as text') !== -1);
     audit(page);
   }
   const missing = await openFromNormal({routes: {'GET /api/v1/session': {status: 200, body: sessionReply({web_url: null, globus_url: null})}}});
-  assert.ok(missing.page.seen('detail-body').indexOf('No address in the Globus web app is recorded for this session.') !== -1);
+  assert.ok(missing.page.seen('detail-body').indexOf('No Globus web app address is recorded.') !== -1);
   assert.strictEqual(missing.page.buttons('detail-body', 'Copy Globus address').length, 0);
   audit(missing.page);
 });
@@ -1323,8 +1448,12 @@ test('Expert: without a user name the commands show the placeholder and say what
   const made = await openFromExpert({});
   const text = made.page.seen('detail-body');
   assert.ok(text.indexOf('scp -r YOUR_ARC_USERNAME@datatransfer.arc.vt.edu:/projects/pcl_photonics/raw/') !== -1);
-  assert.ok(text.indexOf('Put your ARC user name in place of YOUR_ARC_USERNAME. To have it filled in, type it into ' +
-    '"Your ARC user name" on the Expert view, then open this session again.') !== -1);
+  assert.ok(text.indexOf('Put your ARC user name in place of YOUR_ARC_USERNAME, or save it in Expert, SSH settings.') !== -1);
+  // "Set user name" closes the panel and puts the focus in the name field, its toggle open.
+  assert.ok(!made.page.byId('ssh-settings').open);
+  await made.page.click(made.page.button('detail-body', 'Set user name'));
+  assert.ok(made.page.byId('ssh-settings').open);
+  assert.strictEqual(made.page.document.activeElement, made.page.byId('arc-user'));
   audit(made.page);
 });
 
@@ -1356,7 +1485,7 @@ test('Expert: an odd host from the backend, or no path at all, gets no command e
     me.storage = host === null ? undefined : {ssh_host: host};
     const made = await openFromExpert({arcUser: 'demo-user', routes: {'GET /api/v1/me': {status: 200, body: me}}});
     const text = made.page.seen('detail-body');
-    assert.ok(text.indexOf('The backend did not name a usable SSH host, so the commands are not written out here. Copy the path instead.') !== -1,
+    assert.ok(text.indexOf('No usable SSH host was named, so there are no commands. Copy the path instead.') !== -1,
       JSON.stringify(host));
     assert.ok(text.indexOf('scp -r') === -1 && text.indexOf('sftp ') === -1 && text.indexOf('rsync -av') === -1);
     assert.strictEqual(made.page.buttons('detail-body', 'Copy ARC path').length, 1);
@@ -1387,7 +1516,7 @@ test('the detail panel from Status: both sets of actions for a role with Expert,
 test('the detail panel: a reply with fields missing, a session that is not there, hostile values', async function () {
   const sparse = await openFromNormal({routes: {'GET /api/v1/session': {status: 200, body: {session: {path: 'raw/x/sparse'}}}}});
   let text = sparse.page.seen('detail-body');
-  ['No address in the Globus web app is recorded for this session.', 'Path inside the project folder raw/x/sparse',
+  ['No Globus web app address is recorded.', 'Path inside the project folder raw/x/sparse',
     'This session has no labels.', 'No run was made from this session.', 'No files are listed.'].forEach(function (needle) {
     assert.ok(text.indexOf(needle) !== -1, 'missing: ' + needle + '\n' + text);
   });
@@ -1421,7 +1550,7 @@ test('the detail panel: a reply with fields missing, a session that is not there
   text = hostile.page.seen('detail-body');
   assert.ok(text.indexOf('<img src=x onerror=alert(1)>') !== -1 && text.indexOf('<U+202E>') !== -1 && text.indexOf(RLO) === -1);
   ['img', 'script', 'svg', 'a', 'b', 'iframe'].forEach(function (tag) {
-    assert.strictEqual(body.querySelectorAll(tag).length, 0, 'a <' + tag + '> element was made from text');
+    assert.strictEqual(madeFromText(hostile.page, body, tag).length, 0, 'a <' + tag + '> element was made from text');
   });
   ['constructor kept', 'a column this page does not know', 'Other fields'].forEach(function (needle) {
     assert.ok(text.indexOf(needle) !== -1, 'missing: ' + needle);
@@ -1436,15 +1565,20 @@ test('Expert: the tables, the examples, the history, and names put into the quer
   const page = await open({token: ADMIN_TOKEN, hash: '#expert', routes: {'GET /api/v1/sql/history': {status: 200, body: {items: [
     {at_utc: '2026-11-17T03:50:15.281Z', query_text: 'SELECT 1', ok: true, n_rows: 1, elapsed_ms: 3, error_text: null},
     {at_utc: '2026-11-17T03:49:15.281Z', query_text: 'SELECT * FROM nothing', ok: false, n_rows: null, elapsed_ms: 2, error_text: 'no such table: nothing\nmore'}]}}}});
-  assert.strictEqual(page.seen('sql-limit'), 'A query can only read. A result stops at 1,000 rows.');
+  assert.strictEqual(page.seen('sql-limit'), 'Read-only. Results stop at 1,000 rows.');
   assert.strictEqual(page.seen('sql-dialect'), 'PostgreSQL SQL');
   let text = page.seen('schema-list');
-  assert.ok(text.indexOf('sessions table One row per session folder on ARC.') !== -1 && text.indexOf('session_summary view') !== -1);
-  const toggle = page.button('schema-list', '2 columns');
+  assert.ok(text.indexOf('Show columns of sessions sessions 2') !== -1 && text.indexOf('session_summary view 0') !== -1, text);
+  // Names only: a description is the tooltip of its name.
+  const tableName = page.buttons('schema-list', 'sessions').filter(function (button) { return button.classList.contains('insert'); });
+  assert.strictEqual(tableName.length, 1);
+  assert.strictEqual(tableName[0].getAttribute('title'), 'One row per session folder on ARC.');
+  const toggle = page.button('schema-list', 'Show columns of sessions');
   assert.strictEqual(toggle.getAttribute('aria-expanded'), 'false');
   await page.click(toggle);
   assert.strictEqual(toggle.getAttribute('aria-expanded'), 'true');
-  assert.ok(page.seen('schema-list').indexOf('Mixed Case text may be empty A made-up name that needs quotes.') !== -1);
+  assert.ok(page.seen('schema-list').indexOf('Mixed Case text null') !== -1);
+  assert.strictEqual(page.button('schema-list', 'Mixed Case').getAttribute('title'), 'A made-up name that needs quotes.');
   await page.click(page.button('schema-list', 'Mixed Case'));
   assert.strictEqual(page.byId('sql-text').value, '"Mixed Case"');
   assert.strictEqual(page.document.activeElement, page.byId('sql-text'));
@@ -1565,7 +1699,7 @@ test('Expert: what the database refuses is shown in its own words; other failure
   assert.ok(page.shown('sql-error'));
   assert.strictEqual(page.byId('sql-error').querySelectorAll('p')[0].textContent, 'The database could not run this query');
   assert.strictEqual(page.byId('sql-error').querySelectorAll('pre')[0].textContent, message, 'the caret line keeps its spaces');
-  assert.ok(page.seen('sql-error').indexOf('More from the backend') !== -1 && page.seen('sql-error').indexOf('"position": 15') !== -1);
+  assert.ok(page.seen('sql-error').indexOf('More details') !== -1 && page.seen('sql-error').indexOf('"position": 15') !== -1);
   assert.strictEqual(page.seen('sql-result'), '');
   audit(page);
 
@@ -1591,7 +1725,7 @@ test('Expert: what the database refuses is shown in its own words; other failure
   }
   const empty = await open({token: ADMIN_TOKEN, hash: '#expert'});
   await empty.click(empty.byId('sql-run'));
-  assert.strictEqual(empty.seen('sql-status'), 'Type a query first, or choose an example.');
+  assert.strictEqual(empty.seen('sql-status'), 'Type a query first, or pick an example.');
   assert.strictEqual(empty.paths('POST /api/v1/sql').length, 0);
 });
 
@@ -1681,17 +1815,17 @@ test('Expert: the ARC user name is checked, kept in this browser only, and remov
   assert.strictEqual(page.byId('arc-user').value, '');
   await page.type('arc-user', '  demo-user ');
   assert.strictEqual(page.window.localStorage.data['pcldb.arc_user'], 'demo-user');
-  assert.strictEqual(page.seen('arc-user-status'), 'Kept in this browser. The commands now use it.');
+  assert.strictEqual(page.seen('arc-user-status'), 'Saved in this browser.');
   for (const bad of ['demo user', '-oProxyCommand', 'demo;id', '$(id)', 'demo@vt.edu', 'a'.repeat(65), 'demo' + RLO]) {
     await page.type('arc-user', bad);
     assert.strictEqual(page.window.localStorage.data['pcldb.arc_user'], 'demo-user', 'a bad name is not kept: ' + JSON.stringify(bad));
-    assert.ok(/^A user name has only letters, digits, dots, hyphens and underscores.* It was not kept; the commands show YOUR_ARC_USERNAME\.$/
+    assert.ok(/^A user name has only letters, digits, dots, hyphens and underscores.* It was not kept\.$/
       .test(page.seen('arc-user-status')), page.seen('arc-user-status'));
     assert.ok(page.byId('arc-user-status').classList.contains('is-bad'));
   }
   await page.type('arc-user', '');
   assert.deepStrictEqual(page.window.localStorage.data, {});
-  assert.strictEqual(page.seen('arc-user-status'), 'Removed. The commands show YOUR_ARC_USERNAME.');
+  assert.strictEqual(page.seen('arc-user-status'), 'Removed.');
   page.log.requests.forEach(function (request) {
     assert.ok((request.path + JSON.stringify(request.headers) + (request.raw || '')).indexOf('demo') === -1);
   });
@@ -1709,7 +1843,7 @@ test('Expert: the ARC user name is checked, kept in this browser only, and remov
   assert.ok(off.shown('view-app'), 'signing in works without storage');
   await off.go('#expert');
   await off.type('arc-user', 'demo-user');
-  assert.strictEqual(off.seen('arc-user-status'), 'This browser does not keep it. The commands use it until you close this page.');
+  assert.strictEqual(off.seen('arc-user-status'), 'Used until you close this page.');
 });
 
 test('Expert: when the list of tables cannot be loaded there is a way to try again', async function () {
@@ -1719,7 +1853,7 @@ test('Expert: when the list of tables cannot be loaded there is a way to try aga
     'GET /api/v1/sql/examples': function () { return down ? NETWORK : {status: 200, body: EXAMPLES}; }}});
   assert.ok(/^The backend is not reachable\./.test(page.seen('schema-status')));
   assert.ok(page.shown('schema-retry'));
-  assert.strictEqual(page.byId('sql-examples').options[0].textContent, 'The examples could not be loaded');
+  assert.strictEqual(page.byId('sql-examples').options[0].textContent, 'Examples unavailable');
   down = false;
   await page.click(page.byId('schema-retry'));
   assert.strictEqual(page.seen('schema-status'), '');
@@ -1732,8 +1866,8 @@ test('Expert: when the list of tables cannot be loaded there is a way to try aga
     'GET /api/v1/sql/schema': {status: 200, body: {engine: 'sqlite', schema: 'pcl', objects: []}},
     'GET /api/v1/sql/examples': {status: 200, body: {engine: 'sqlite', examples: []}}}});
   assert.strictEqual(empty.seen('schema-status'), 'The backend listed no tables.');
-  assert.strictEqual(empty.byId('sql-examples').options[0].textContent, 'There are no examples');
-  assert.strictEqual(empty.seen('history-status'), 'No queries yet. The ones you run are listed here.');
+  assert.strictEqual(empty.byId('sql-examples').options[0].textContent, 'No examples');
+  assert.strictEqual(empty.seen('history-status'), 'No queries yet.');
   audit(empty);
 });
 
@@ -1745,14 +1879,34 @@ test('Status: the database, the search and the assistant in plain words', async 
   ['The session records are kept in PostgreSQL 18.7 (this computer, port 15439).', 'These are made-up demo sessions, not lab data.',
     'Sessions 16', 'Files 420', 'Analysis runs 14', 'Classified points 156', 'raman-portable 12',
     "Questions in Normal mode are searched in this computer's copy of the index. Globus Search is not in use yet.",
-    'Globus Search index not set up yet', 'Globus sign-in on this computer not signed in', 'Waiting to be sent to Globus Search 16',
+    'Globus index not set up yet', 'Globus sign-in not signed in', 'Waiting to be sent to Globus Search 16',
     'The ARC assistant can be reached. It reads each question and writes the short answer above the table.',
     'The assistant works with the personal ARC key of whoever runs pcldb on this computer. A shared server needs an answer from ARC about keys first.',
     'Right now can be reached', 'Model gpt-oss-120b', 'The last check said: The ARC LLM service answers and accepts the key.',
-    'Two ways to work', 'Your role is admin. You can use both Normal and Expert.', 'Newest registrations',
+    'About the two modes', 'You are admin: Normal and Expert', 'Newest registrations',
     'registered demo data admin', 'refused an upload'].forEach(function (needle) {
     assert.ok(text.indexOf(needle) !== -1, 'missing: ' + needle + '\n' + text);
   });
+  // Three compact cards: a title, a coloured dot with the state, one plain line, a few facts, and
+  // everything else behind a closed "Details".
+  const cards = page.byId('status-cards').childNodes;
+  assert.deepStrictEqual(cards.map(function (card) { return seen(card.querySelectorAll('h3')[0]); }), ['Database', 'Search index', 'Assistant']);
+  assert.deepStrictEqual(cards.map(function (card) {
+    return card.querySelectorAll('span').filter(function (span) { return span.classList.contains('pill'); }).map(function (span) {
+      return span.className + ' ' + seen(span);
+    }).join();
+  }), ['pill pill-ok Running', 'pill pill-ok Local index', 'pill pill-ok Ready']);
+  // A healthy database is not marked as needing attention: "demo data" is a word in its line.
+  assert.deepStrictEqual(cards.map(function (card) { return seen(card.querySelectorAll('p')[0]); }),
+    ['PostgreSQL 18.7 \u{b7} demo data', "Questions search this computer's copy of the index.", 'Reads questions and writes short answers.']);
+  cards.forEach(function (card) {
+    const details = card.querySelectorAll('details');
+    assert.strictEqual(details.length, 1);
+    assert.strictEqual(details[0].open, false);
+    assert.ok(seen(details[0]).length > seen(card).length / 3, 'the long words are in Details');
+  });
+  assert.ok(seen(cards[0].querySelectorAll('details')[0]).indexOf('The session records are kept in') !== -1);
+  assert.ok(seen(cards[2].querySelectorAll('details')[0]).indexOf('A shared server needs an answer from ARC') !== -1);
   await page.click(page.byId('status-refresh'));
   assert.strictEqual(page.paths('GET /api/v1/status').length, 2);
   audit(page);
@@ -1785,8 +1939,8 @@ test('Status: each state of the assistant, Globus Search in use, an empty databa
   let text = off.seen('panel-status');
   ['The assistant is switched off in the settings. Keyword rules read the questions, and no written answer is given.', 'Right now switched off',
     'Questions in Normal mode are searched with Globus Search, a hosted index that holds one small entry for each session.',
-    'Globus Search index set up', 'In Globus Search 14', 'Could not be sent 2', 'held 1', 'The session records are kept in SQLite 3.45.3',
-    'Sessions 0', 'Newest session started no session has a start time'].forEach(function (needle) {
+    'Globus index set up', 'In Globus Search 14', 'Could not be sent 2', 'held 1', 'The session records are kept in SQLite 3.45.3',
+    'Sessions 0', 'Newest session no start time', 'Some not sent 2 entries could not be sent.', 'Running SQLite 3.45.3'].forEach(function (needle) {
     assert.ok(text.indexOf(needle) !== -1, 'missing: ' + needle + '\n' + text);
   });
   assert.ok(text.indexOf('made-up demo sessions') === -1 && !off.shown('demo-chip'));
@@ -1835,7 +1989,7 @@ test('when /me fails the page says why and offers to try again; odd replies do n
     assert.ok(odd.shown('view-app') && odd.shown('panel-normal') && !odd.shown('tab-expert'), 'no "sql" in a list: no Expert');
     assert.ok(odd.seen('who').length < 150, 'the header stays small: ' + odd.seen('who').length);
     assert.strictEqual(odd.byId('ask-simulated').checked, true);
-    assert.strictEqual(odd.seen('sql-limit'), 'A query can only read.');
+    assert.strictEqual(odd.seen('sql-limit'), 'Read-only.');
     audit(odd);
   }
 });

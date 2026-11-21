@@ -128,29 +128,36 @@ and your Globus sign-in).
 
 ## What you see in the website
 
+A calm, light or dark page (it follows your system) with one accent colour. Longer
+explanations wait behind small "Details" toggles and tooltips.
+
 - **Sign in.** The link that `serve` prints signs you in as the local admin. Otherwise paste a
   token: the admin's is the one line of `var/admin_token.txt`; others are made with `pcldb token
-  new`. The browser keeps the token for this tab only. "Sign out" makes the page forget it.
-- **The header** shows "PCL data", the engine (PostgreSQL or SQLite), a "Demo data" mark when the
-  demo is loaded, your name and role, and the switch between the lanes: "Normal: ask in plain
-  English, files through Globus", "Expert: SQL, files through SSH" (only for the analyst and
-  admin roles) and "Status".
-- **Normal.** One question box, example questions, and "Include simulated sessions". After a
-  question: the written answer (labelled "Written by the ARC assistant. Check it against the
-  table." and only when the assistant wrote it), "How this was searched" (one sentence made by
-  pcldb from the request, the request itself, who answered and who planned it: the assistant or
-  the keyword rules), then a table of sessions. Click a row to open the session.
-- **Expert.** The tables and views with their columns and descriptions, a query box
-  (Ctrl+Enter or Cmd+Enter runs it), examples for the engine in use, the result grid with
-  "Download CSV", and your last queries. A value in a column named `path` or `session_path`
-  opens that session. The box "Your ARC user name" fills in the copy commands; it stays in this
-  browser and is never sent to the server.
-- **A session** shows every field, how it got to ARC, its files, analysis runs and labels, and
-  the file actions of the lane you opened it from: "Open in Globus" and "Copy Globus address"
-  (Normal), or "Copy ARC path" and `scp`, `sftp` and `rsync` commands (Expert). A path with
-  spaces, quotes or other unusual characters gets no commands, only the path.
-- **Status** says in plain words which database runs, how many sessions it holds, whether search
-  entries wait to be sent, whether the assistant can be reached, and the newest registrations.
+  new`. The browser keeps the token for this tab only. The sign-out icon (top right) makes the
+  page forget it.
+- **The header**: "PCL data" on the left; the switch Normal | Expert | Status in the middle
+  (Expert only for the analyst and admin roles); a "Demo data" pill when the demo is loaded,
+  your initial and name, and Sign out on the right.
+- **Normal.** One big search box with example chips under it (each asks a whole question) and
+  an "Include simulated" switch. After a question: a one-line summary ("4 sessions" and how it
+  was read), a "Details" toggle with how it was searched and the exact request, the answer
+  (labelled "Written by the ARC assistant. Check it against the table." and only when the
+  assistant wrote it), then the sessions: a table on a wide screen, cards on a phone. Click a
+  session to open it.
+- **Expert.** The query box first, with Examples, Run (Ctrl+Enter or Cmd+Enter) and Cancel
+  while a query runs; the result with its row count and "Download CSV". The tables sit in a
+  panel at the side (click a name to put it into the query, the arrow shows its columns).
+  "History" holds your last queries, and "SSH settings" holds "Your ARC user name", which fills
+  in the copy commands; it stays in this browser and is never sent to the server. A value in a
+  column named `path` or `session_path` opens that session.
+- **A session** opens in a panel: its key facts, the file actions of the lane you opened it
+  from ("Open in Globus" and "Copy Globus address" in Normal, or "Copy ARC path" and the `scp`,
+  `sftp` and `rsync` commands in Expert), its labels, and "All fields", "Runs" and "Files"
+  behind toggles. A path with spaces, quotes or other unusual characters gets no commands, only
+  the path.
+- **Status** shows three cards (Database, Search index, Assistant), each with a coloured dot,
+  one plain line and a few facts; "Details" on each card has the rest. Below them: the newest
+  registrations, and "About the two modes".
 
 ## The two engines
 

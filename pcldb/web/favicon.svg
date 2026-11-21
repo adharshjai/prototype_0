@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
   <title>PCL data</title>
-  <rect width="32" height="32" rx="7" fill="#1a5fb4"/>
-  <path d="M5 23h5l3-14 3 14h3l2-7 2 7h4" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="32" height="32" rx="9" fill="#4f46e5"/>
+  <path d="M6 22h4l3-12 3 12h3l2-6 2 6h3" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
