@@ -406,10 +406,10 @@ Real and working on this Mac (macOS, Apple Silicon, Python 3.13.5):
   itself; see [docs/SECURITY.md](docs/SECURITY.md)).
 - Every API endpoint, by hand against `pcldb serve` on both engines, and in the automated tests.
   The page's script runs in the tests in a scripted stand-in browser (Node) against the real
-  server's answers. The website was also used in a real browser (Chromium) against `pcldb serve`
-  on SQLite and on PostgreSQL 18.7: the sign-in link, the Normal lane's example questions and the
-  session dialog, the Expert lane's schema list, examples and history, the SSH commands, the
-  roles, and the layout at phone width in light and dark.
+  server's answers on both engines. The redesigned website was used in a real browser (Chromium)
+  against `pcldb serve` on SQLite: the sign-in link, the Normal lane's example questions and the
+  session panel, the Expert lane's tables, examples, history and CSV, the SSH commands, the
+  viewer role, keyboard use, and the layout at desktop and phone width in light and dark.
 - Users, roles, tokens; the keyword planner for questions.
 
 Stand-ins and gaps, said plainly:
@@ -420,12 +420,15 @@ Stand-ins and gaps, said plainly:
 - **ARC LLM: never seen working.** The real service was reached once from this Mac, off the VT
   network, and answered HTTP 403 as expected (pcldb reported "not on the VT network or VPN").
   No successful reply has been seen, so how well the model plans questions is not known.
-- **Windows: nothing here was run on a Windows PC.** The code is written for Windows (and
-  Linux), and some Windows behaviour is tested with stand-ins on the Mac. The automated GitHub
-  checks ([.github/workflows/ci.yml](.github/workflows/ci.yml): Windows with Python 3.11 and
-  3.14, Ubuntu with Python 3.13, on every push) are the only Windows and Linux runs; the
-  repository's Actions tab shows their latest result. PowerShell, cmd, Notepad, directory
-  junctions and network shares were never tried by a person ([docs/WINDOWS.md](docs/WINDOWS.md)
+- **Windows: checked by machines, not yet by a person.** The automated GitHub checks
+  ([.github/workflows/ci.yml](.github/workflows/ci.yml)) run on every push and are the only
+  Windows and Linux runs. On 2026-11-21 they passed on Windows (the `windows-latest` image, with
+  Python 3.11 and with 3.14, and PostgreSQL 17.12) and on Ubuntu 26.04 (Python 3.13,
+  PostgreSQL 18.7): the whole test suite, the PostgreSQL tests again with misleading `PG*`
+  variables, the end-to-end smoke run on both engines through the launcher (`pcldb.cmd` on
+  Windows), and a bare Python without psycopg. The repository's Actions tab shows the latest
+  result. Nobody has used pcldb on a Windows PC yet: PowerShell, cmd, Notepad, directory
+  junctions and network shares were never tried by hand ([docs/WINDOWS.md](docs/WINDOWS.md)
   covers them).
 - PostgreSQL 16 and 19 were not tried. Python 3.12 was tried on SQLite only (SQLite 3.50.4,
   without psycopg); Python 3.11 runs only in the GitHub checks.
